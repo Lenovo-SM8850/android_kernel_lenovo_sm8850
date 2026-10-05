@@ -68,6 +68,9 @@ def define_techpack_modules(target, msm_target, variant):
         "//{}/nxp/opensource/driver:{}_nxp-nci".format(SOC_MODULES_REPO_PATH, target),
     ]
 
+    if target == "canoe_perf":
+        techpack_targets += ["//{}/lenovo:canoe_perf_modules".format(SOC_MODULES_REPO_PATH)]
+
     # 1. Define how files are packaged (permissions + flattening)
     pkg_files(
         name = "{}_all_vendor_module_dist_files".format(target),

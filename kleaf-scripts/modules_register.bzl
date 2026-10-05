@@ -69,6 +69,7 @@ def _generate_ddk_target(
 
     ddk_config(
         name = "{}_config".format(target_variant),
+        visibility = ["//vendor/lenovo/sm8850-modules/lenovo:__subpackages__"],
         defconfig = ":{}_defconfig".format(target_variant),
         kconfigs = [":kconfig.msm.generated"],
         kernel_build = ":{}_base_kernel".format(target_variant),
