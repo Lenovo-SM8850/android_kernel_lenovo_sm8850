@@ -1,5 +1,19 @@
 def register_modules(registry):
     registry.register(
+        name = "drivers/usb/gadget/function/usb_f_rndis",
+        out = "usb_f_rndis.ko",
+        config = "CONFIG_USB_F_RNDIS",
+        srcs = [
+            "drivers/usb/gadget/function/ack-rndis/f_rndis.c",
+            "drivers/usb/gadget/function/ack-rndis/rndis.c",
+            "drivers/usb/gadget/function/ack-rndis/rndis.h",
+            "drivers/usb/gadget/function/ack-rndis/u_rndis.h",
+            "drivers/usb/gadget/function/ack-rndis/u_ether.h",
+            "drivers/usb/gadget/function/ack-rndis/u_ether_configfs.h",
+        ],
+    )
+
+    registry.register(
         name = "drivers/usb/gadget/function/f_fs_ipc_log",
         out = "f_fs_ipc_log.ko",
         config = "CONFIG_USB_F_FS_IPC_LOGGING",
@@ -55,11 +69,11 @@ def register_modules(registry):
             "drivers/usb/gadget/function/f_gsi.c",
             "drivers/usb/gadget/function/f_gsi.h",
             "drivers/usb/gadget/function/ndis.h",
-            "drivers/usb/gadget/function/rndis.c",
             "drivers/usb/gadget/function/rndis.h",
             "drivers/usb/gadget/function/u_rndis.h",
         ],
         deps = [
+            "drivers/usb/gadget/function/usb_f_rndis",
             # do not sort
             "drivers/usb/dwc3/dwc3-msm",
             "drivers/soc/qcom/wcd_usbss_i2c",
@@ -159,22 +173,5 @@ def register_modules(registry):
         deps = [
             # do not sort
             "drivers/soc/qcom/bam_dmux",
-        ],
-    )
-
-    registry.register(
-        name = "drivers/usb/gadget/function/usb_f_rndis",
-        out = "usb_f_rndis.ko",
-        config = "CONFIG_USB_F_RNDIS",
-        srcs = [
-            # do not sort
-            "drivers/usb/gadget/function/f_rndis.c",
-            "drivers/usb/gadget/function/ndis.h",
-            "drivers/usb/gadget/function/rndis.c",
-            "drivers/usb/gadget/function/rndis.h",
-            "drivers/usb/gadget/function/u_rndis.h",
-            "drivers/usb/gadget/function/u_ether.c",
-            "drivers/usb/gadget/function/u_ether.h",
-            "drivers/usb/gadget/function/u_ether_configfs.h",
         ],
     )

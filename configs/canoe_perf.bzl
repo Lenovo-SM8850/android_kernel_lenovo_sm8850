@@ -420,6 +420,8 @@ canoe_perf_config = {
     "CONFIG_STM_SOURCE_HEARTBEAT": "m",
     "CONFIG_UCSI_QTI_GLINK": "m",
     "CONFIG_UIO_MSM_SHAREDMEM": "m",
+    "CONFIG_USB_CONFIGFS_RNDIS": "y",
+    "CONFIG_USB_F_RNDIS": "y",
     "CONFIG_USB_CONFIGFS_F_CCID": "m",
     "CONFIG_USB_CONFIGFS_F_CDEV": "m",
     "CONFIG_USB_CONFIGFS_F_GSI": "m",
