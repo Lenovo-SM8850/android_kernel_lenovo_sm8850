@@ -7,6 +7,7 @@ def register_modules(registry):
             # do not sort
             "drivers/base/regmap/qti-regmap-debugfs.c",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(

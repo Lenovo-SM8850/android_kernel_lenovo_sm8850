@@ -10,5 +10,6 @@ def register_modules(registry):
         deps = [
             # do not sort
             "kernel/torture",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )

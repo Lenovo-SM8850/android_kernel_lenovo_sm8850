@@ -37,6 +37,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 

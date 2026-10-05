@@ -82,6 +82,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
             "drivers/dma-buf/heaps/deferred-free-helper",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
     registry.register(

@@ -7,4 +7,5 @@ def register_modules(registry):
             # do not sort
             "drivers/firmware/arm_scmi/qcom_scmi_vendor.c",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )

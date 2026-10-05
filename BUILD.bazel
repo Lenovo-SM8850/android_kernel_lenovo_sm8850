@@ -1,3 +1,4 @@
+load(":private_headers.bzl", "define_private_headers")
 # SPDX-License-Identifier: GPL-2.0
 
 load(":kleaf-scripts/msm_kernel_extensions.bzl", "define_top_level_rules")
@@ -60,6 +61,8 @@ load(":kleaf-scripts/targets/vienna_le.bzl", "define_vienna_le")
 load(":kleaf-scripts/targets/waipio.bzl", "define_waipio")
 
 exports_files(["android/abi_gki_aarch64_qcom"])
+
+define_private_headers()
 
 define_top_level_rules()
 
@@ -344,6 +347,7 @@ label_flag(
 )
 
 define_canoe()
+
 
 define_waipio()
 

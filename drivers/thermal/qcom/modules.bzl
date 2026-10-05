@@ -25,6 +25,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -37,6 +38,7 @@ def register_modules(registry):
             "drivers/thermal/qcom/bcl_soc.c",
             "drivers/thermal/qcom/thermal_zone_internal.h",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(
@@ -87,6 +89,7 @@ def register_modules(registry):
             # do not sort
             "drivers/thermal/qcom/qcom-spmi-temp-alarm.c",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(
@@ -118,6 +121,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -182,6 +186,7 @@ def register_modules(registry):
         deps = [
             # do not sort
             "drivers/soc/qcom/qmi_helpers",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -203,6 +208,7 @@ def register_modules(registry):
             # do not sort
             "drivers/thermal/qcom/thermal_config.c",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(
@@ -315,6 +321,7 @@ def register_modules(registry):
             # do not sort
             "drivers/thermal/qcom/qcom-spmi-adc5",
             "drivers/iio/adc/qcom-vadc-common",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -335,6 +342,7 @@ def register_modules(registry):
             # do not sort
             "kernel/trace/qcom_ipc_logging",
             "drivers/firmware/qcom/qcom-scm",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -363,6 +371,7 @@ def register_modules(registry):
         deps = [
             # do not sort
             "drivers/soc/qcom/qmi_helpers",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -395,6 +404,7 @@ def register_modules(registry):
             "drivers/thermal/qcom/policy_engine.c",
             "drivers/thermal/qcom/thermal_zone_internal.h",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(

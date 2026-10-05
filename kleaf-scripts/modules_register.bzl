@@ -51,7 +51,8 @@ def _generate_ddk_target(
         ddk_config_deps,
         implicit_config_fragment,
         config_path,
-        library_names):
+        library_names,
+        extra_install_modules):
     native.alias(
         name = "{}_base_kernel".format(target_variant),
         actual = base_kernel,
@@ -69,6 +70,7 @@ def _generate_ddk_target(
 
     ddk_config(
         name = "{}_config".format(target_variant),
+        visibility = ["//vendor/lenovo/sm8850-modules/lenovo:__subpackages__"],
         defconfig = ":{}_defconfig".format(target_variant),
         kconfigs = [":kconfig.msm.generated"],
         kernel_build = ":{}_base_kernel".format(target_variant),
@@ -120,15 +122,14 @@ def _generate_ddk_target(
 
         deps = module_deps + library_deps
         deps += [":{}_{}".format(target_variant, dep) for dep in module.hook_deps]
+        deps += [dep.replace("{target_variant}", target_variant) for dep in module.deps if dep.startswith("//")]
+
         src_hdrs = [src for src in module.srcs if src.endswith(".h")]
         includes = (module.includes or []) + {paths.dirname(hdr): "" for hdr in src_hdrs}.keys()
 
         extra_args = dict(module.extra_args)
-        if module.name == "drivers/ufs/host/ufs-qcom" and target_variant in ["canoe_perf", "wuji_perf"]:
-            extra_args["local_defines"] = extra_args.get("local_defines", []) + [
-                "CONFIG_LENOVO_SM8850_DEVICE_PROFILE=1",
-            ]
-
+        if module.name == "drivers/ufs/host/ufs-qcom":
+            extra_args["local_defines"] = extra_args.get("local_defines", []) + ["CONFIG_LENOVO_SM8850_DEVICE_PROFILE=1"]
         ddk_module(
             name = "{}/{}".format(target_variant, module.name),
             out = module.out,
@@ -160,7 +161,7 @@ def _generate_ddk_target(
 
     kernel_modules_install(
         name = "{}_modules_install".format(target_variant),
-        kernel_modules = [":{}_all_modules".format(target_variant)],
+        kernel_modules = [":{}_all_modules".format(target_variant)] + extra_install_modules,
         outs = ["modules.dep"],
     )
 
@@ -272,7 +273,8 @@ def create_module_registry():
             ddk_config_deps = None,
             implicit_config_fragment = None,
             config_path = None,
-            library_names = None):
+            library_names = None,
+            extra_install_modules = None):
         """Define register modules for a target/variant.
 
         Creates the following rules:
@@ -320,6 +322,7 @@ def create_module_registry():
             implicit_config_fragment,
             config_path,
             library_names or {},
+            extra_install_modules or [],
         )
 
     return struct(

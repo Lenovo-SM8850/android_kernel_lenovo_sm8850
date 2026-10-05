@@ -39,6 +39,7 @@ def register_modules(registry):
             # do not sort
             "drivers/interconnect/qcom/icc-debug.c",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(
@@ -63,6 +64,7 @@ def register_modules(registry):
             "drivers/soc/qcom/smem",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 

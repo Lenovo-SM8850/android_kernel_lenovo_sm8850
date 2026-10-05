@@ -53,6 +53,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -123,6 +124,7 @@ def register_modules(registry):
         deps = [
             # do not sort
             "drivers/soc/qcom/smem",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -160,6 +162,7 @@ def register_modules(registry):
             "drivers/rpmsg/qcom_glink",
             "kernel/trace/qcom_ipc_logging",
             "drivers/soc/qcom/debug_symbol",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -179,6 +182,7 @@ def register_modules(registry):
             "drivers/rpmsg/qcom_glink_spss",
             "drivers/rpmsg/qcom_glink_rpm",
             "drivers/irqchip/qcom-mpm",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -215,5 +219,6 @@ def register_modules(registry):
             "kernel/trace/qcom_ipc_logging",
             "drivers/soc/qcom/debug_symbol",
             "drivers/soc/qcom/slatecom_spi",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
