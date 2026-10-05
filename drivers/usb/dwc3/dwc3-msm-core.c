@@ -61,6 +61,15 @@
 #include "drivers/usb/host/xhci.h"
 #include "debug-ipc.h"
 
+#include <linux/usb/lenovo_ucsi.h>
+static enum usb_role c1_role, c2_role;
+static struct class *ot_class;
+static struct device *devc1c2;
+static int lanes_flag;
+struct dwc3_msm;
+static int dwc3_start_stop_host(struct dwc3_msm *mdwc, bool start);
+#include "lenovo-usb.h"
+
 #define NUM_LOG_PAGES   12
 
 /* dload specific suppot */
@@ -607,6 +616,7 @@ struct dwc3_msm {
 	bool			usb3_phy_off;
 	bool			enable_host_slow_suspend;
 	bool			force_suspend;
+	bool			force_gen1;
 	bool			hibernate_skip_thaw;
 	unsigned long		lpm_flags;
 	unsigned int		vbus_draw;
@@ -3817,6 +3827,10 @@ static int dwc3_msm_power_collapse_por(struct dwc3_msm *mdwc)
 			mdwc3_dis_sending_cm_l1(mdwc);
 	}
 
+	if (mdwc->force_gen1 && dwc->ip == DWC31_IP)
+		dwc3_msm_write_reg_field(mdwc->base, DWC3_LLUCTL,
+				DWC3_LLUCTL_FORCE_GEN1, 1);
+
 	return 0;
 }
 
@@ -5590,6 +5604,12 @@ static enum usb_role dwc3_msm_usb_role_switch_get_role(struct usb_role_switch *s
 static int dwc3_msm_set_role(struct dwc3_msm *mdwc, enum usb_role role)
 {
 	enum usb_role cur_role;
+	char *uen1[] = { "DOU_USB=usb2port", NULL };
+	char *uen2[] = { "DOU_USB=usb1or0port", NULL };
+	int ret;
+
+	bool dual_port = of_property_read_bool(mdwc->dev->of_node,
+					       "lenovo,dual-port-data-switch");
 
 	if (mdwc->dis_role_switch)
 		return -EPERM;
@@ -5599,6 +5619,32 @@ static int dwc3_msm_set_role(struct dwc3_msm *mdwc, enum usb_role role)
 
 	mutex_lock(&mdwc->role_switch_mutex);
 	cur_role = dwc3_msm_get_role(mdwc);
+
+	if (dual_port) {
+		pr_info("[LENOVO_UCSI] cur_role = %s, new_role = %s, present = [%d %d]",
+			dwc3_msm_usb_role_string(cur_role), dwc3_msm_usb_role_string(role),
+			C1_d_present, C2_d_present);
+		if (con_now == 2)
+			c2_role = role;
+		else if (con_now == 1)
+			c1_role = role;
+		if (C1_d_present == 1 && con_now == 2) {
+			role = cur_role;
+			pr_info("%s: c1 is on, role = cur_role, set_role:%s\n", __func__,
+				dwc3_msm_usb_role_string(role));
+		} else if (C2_d_present == 1 && C1_d_present == 0 &&
+			   con_now == 1 && role == USB_ROLE_NONE) {
+			role = c2_role;
+			pr_info("%s: c2 is on, c1 out, role = c2_role,set_role:%s\n", __func__,
+				dwc3_msm_usb_role_string(role));
+		}
+		if (devc1c2) {
+			if (C1_d_present == 1 && C2_d_present == 1)
+				kobject_uevent_env(&devc1c2->kobj, KOBJ_CHANGE, uen1);
+			else
+				kobject_uevent_env(&devc1c2->kobj, KOBJ_CHANGE, uen2);
+		}
+	}
 
 	dbg_log_string("cur_role:%s new_role:%s refcnt:%d\n", dwc3_msm_usb_role_string(cur_role),
 				dwc3_msm_usb_role_string(role), mdwc->refcnt_dp_usb);
@@ -5610,6 +5656,17 @@ static int dwc3_msm_set_role(struct dwc3_msm *mdwc, enum usb_role role)
 	 */
 	if (mdwc->drd_state != DRD_STATE_UNDEFINED && cur_role == role) {
 		dbg_log_string("no USB role change");
+		if (dual_port && c1_role == USB_ROLE_HOST && con_now == 1 &&
+		    C2_d_present == 1 && lanes_flag == 0) {
+			ret = dwc3_start_stop_host(mdwc, false);
+			if (ret) {
+				pr_info("%s: +++++++stop host error\n", __func__);
+				mutex_unlock(&mdwc->role_switch_mutex);
+				return 0;
+			}
+			dwc3_start_stop_host(mdwc, true);
+			pr_info("%s: dwc3_start_stop_host++++++++++++\n", __func__);
+		}
 		mutex_unlock(&mdwc->role_switch_mutex);
 		return 0;
 	}
@@ -5929,12 +5986,28 @@ static struct attribute *dwc3_msm_attrs[] = {
 	&dev_attr_orientation.attr,
 	&dev_attr_mode.attr,
 	&dev_attr_speed.attr,
+	&dev_attr_otg_enable.attr,
 	&dev_attr_bus_vote.attr,
 	&dev_attr_xhci_test.attr,
 	&dev_attr_dynamic_disable.attr,
 	NULL
 };
-ATTRIBUTE_GROUPS(dwc3_msm);
+static umode_t dwc3_msm_attr_is_visible(struct kobject *kobj,
+				       struct attribute *attr, int index)
+{
+	struct device *dev = kobj_to_dev(kobj);
+
+	if (attr == &dev_attr_otg_enable.attr &&
+	    !of_property_read_bool(dev->of_node, "lenovo,dual-port-data-switch"))
+		return 0;
+	return attr->mode;
+}
+
+static const struct attribute_group dwc3_msm_group = {
+	.attrs = dwc3_msm_attrs,
+	.is_visible = dwc3_msm_attr_is_visible,
+};
+__ATTRIBUTE_GROUPS(dwc3_msm);
 
 static int dwc_dpdm_cb(struct notifier_block *nb, unsigned long evt, void *p)
 {
@@ -6083,6 +6156,7 @@ int dwc3_msm_set_dp_mode(struct device *dev, bool dp_connected, int lanes, int o
 	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
 	int ret = 0;
 
+	lanes_flag = dp_connected ? lanes : 0;
 	if (!mdwc || !mdwc->dwc3) {
 		dev_err(dev, "dwc3-msm is not initialized yet.\n");
 		return -EAGAIN;
@@ -6888,6 +6962,7 @@ static int dwc3_msm_parse_params(struct platform_device *pdev, struct device_nod
 
 	mdwc->enable_host_slow_suspend = of_property_read_bool(node,
 				"qcom,enable_host_slow_suspend");
+	mdwc->force_gen1 = of_property_read_bool(node, "qcom,force-gen1");
 
 	mdwc->hibernate_skip_thaw = of_property_read_bool(node,
 				"qcom,hibernate-skip-thaw");
@@ -7040,6 +7115,15 @@ static int vbus_regulator_get(struct dwc3_msm *mdwc)
 	return 0;
 }
 
+static void dwc3_msm_dualport_cleanup(void *data)
+{
+	struct device *dualport = devc1c2;
+
+	devc1c2 = NULL;
+	device_unregister(dualport);
+	class_destroy(ot_class);
+}
+
 static int dwc3_msm_probe(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node, *dwc3_node;
@@ -7053,6 +7137,23 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mdwc);
 	mdwc->dev = &pdev->dev;
+	if (of_property_read_bool(node, "lenovo,dual-port-data-switch")) {
+		ot_class = class_create("douusb");
+		if (IS_ERR(ot_class))
+			return PTR_ERR(ot_class);
+		devc1c2 = device_create(ot_class, NULL, MKDEV(0, 0), NULL, "usbc1c2");
+		if (IS_ERR(devc1c2)) {
+			ret = PTR_ERR(devc1c2);
+			devc1c2 = NULL;
+			class_destroy(ot_class);
+			return ret;
+		}
+		ret = devm_add_action_or_reset(dev, dwc3_msm_dualport_cleanup, NULL);
+		if (ret)
+			return ret;
+		mt_get_otg_enable();
+	}
+
 
 	if ((of_device_is_compatible(dev->of_node, "qcom,dwc3-msm-fw-managed"))) {
 		mdwc->fw_managed_pwr = true;
@@ -7504,6 +7605,9 @@ static int dwc3_msm_host_notifier(struct notifier_block *nb,
 	if (event != USB_DEVICE_ADD && event != USB_DEVICE_REMOVE)
 		return NOTIFY_DONE;
 
+	if (of_property_read_bool(mdwc->dev->of_node, "lenovo,dual-port-data-switch"))
+		lenovo_monitor_device(udev, event);
+
 	/*
 	 * Regardless of where the device is in the host tree, the USB generic
 	 * device's PM resume/suspend should be skipped.  Otherwise, the USB
@@ -7569,7 +7673,7 @@ static int dwc3_msm_host_notifier(struct notifier_block *nb,
 		/* USB root hub device */
 		if (event == USB_DEVICE_ADD) {
 			pm_runtime_use_autosuspend(&udev->dev);
-			pm_runtime_set_autosuspend_delay(&udev->dev, 1000);
+			pm_runtime_set_autosuspend_delay(&udev->dev, -1);
 		}
 	}
 
@@ -7694,6 +7798,10 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 	int ret = 0;
 	u32 reg;
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
+
+	if (on && otg_state &&
+	    of_property_read_bool(mdwc->dev->of_node, "lenovo,dual-port-data-switch"))
+		return -EPERM;
 
 	if (on) {
 		dev_dbg(mdwc->dev, "%s: turn on host\n", __func__);

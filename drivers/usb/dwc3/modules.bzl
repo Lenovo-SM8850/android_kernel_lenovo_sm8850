@@ -6,6 +6,7 @@ def register_modules(registry):
         srcs = [
             # do not sort
             "drivers/usb/dwc3/debug-ipc.h",
+            "drivers/usb/dwc3/lenovo-usb.h",
             "drivers/usb/dwc3/debug_ipc.c",
             "drivers/usb/dwc3/dwc3-msm-core.c",
             "drivers/usb/dwc3/dwc3-msm-ops.c",

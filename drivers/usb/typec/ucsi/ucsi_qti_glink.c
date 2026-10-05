@@ -14,6 +14,12 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/qti_pmic_glink.h>
+#include <linux/gpio/consumer.h>
+#include <linux/gpio/driver.h>
+#include <linux/gpio/machine.h>
+#include <linux/usb/lenovo_ucsi.h>
+#include <linux/delay.h>
+#include <linux/usb/typec_altmode.h>
 
 #include "drivers/usb/typec/ucsi/ucsi.h"
 
@@ -45,6 +51,34 @@
 		pr_debug(fmt, ##__VA_ARGS__); \
 	} while (0)
 
+/* Lenovo dual-port state consumed by the glue, repeater and audio switches. */
+unsigned int cc_port_num;
+unsigned int cc_port_num_1;
+unsigned int cc_port_num_2;
+int C1_d_present;
+int C2_d_present;
+int con_now;
+bool ext_fan_connected;
+static int C1_analog_audio_present, C2_analog_audio_present;
+EXPORT_SYMBOL(cc_port_num);
+EXPORT_SYMBOL(C1_d_present);
+EXPORT_SYMBOL(C2_d_present);
+EXPORT_SYMBOL(con_now);
+EXPORT_SYMBOL(ext_fan_connected);
+
+enum partner_connect_type {
+	CONNECT_OTG_DEVICE,
+	CONNECT_PC_DEVICE,
+	CONNECT_USB_HUB_DEVICE,
+	CONNECT_DP_DEVICE,
+	CONNECT_AC_ADAPTER,
+	CONNECT_ANALOG_AUDIO,
+	CONNECT_C2_PD_DEVICE,
+	CONNECT_UNKNOWN_DEVICE,
+	CONNECT_DEVICE_NULL,
+	CONNECT_DEVICE_NOT_CHANGE,
+};
+
 struct ucsi_read_buf_req_msg {
 	struct pmic_glink_hdr	hdr;
 };
@@ -73,9 +107,23 @@ struct ucsi_notify_ind_msg {
 	u32			reserved;
 };
 
+/* Verified TB323FU extension to the QTI UCSI response buffer. */
+struct ucsi_wire_protocol {
+	u8 connector_offset;
+	u8 change_offset;
+	u8 flags_offset;
+};
+
+static const struct ucsi_wire_protocol lenovo_dual_port_v1 = {
+	.connector_offset = 16,
+	.change_offset = 28,
+	.flags_offset = 30,
+};
+
 struct ucsi_dev {
 	struct device			*dev;
 	struct ucsi			*ucsi;
+	const struct ucsi_wire_protocol *protocol;
 	struct pmic_glink_client	*client;
 	struct dentry			*debugfs_dir;
 	struct completion		read_ack;
@@ -93,6 +141,8 @@ struct ucsi_dev {
 	struct work_struct		unregister_work;
 	atomic_t			state;
 	bool				remoteproc_timestamp_en;
+	struct gpio_desc		*switch_dpmd_gpio;
+	struct gpio_desc		*analog_audio_gpio;
 };
 
 struct remoteproc_ts {
@@ -193,13 +243,142 @@ static size_t ucsi_get_max_len(struct ucsi_dev *udev, bool tx)
 static int handle_ucsi_read_ack(struct ucsi_dev *udev, void *data, size_t len)
 {
 	size_t max_len;
+	u8 *val = data;
+	u8 connector, partner_type, power_mode;
+	u16 change, flags;
+	bool partner_usb;
+	enum partner_connect_type dev_type;
+	int gpio_value;
 
 	max_len = ucsi_get_max_len(udev, false);
-	if (len > max_len) {
+	if (len < 32 || len > max_len) {
 		pr_err("Incorrect received length %zu expected %zu\n", len,
 			max_len);
 		atomic_set(&udev->rx_valid, 0);
 		return -EINVAL;
+	}
+
+	if (udev->protocol) {
+		/* TB323 wire offsets are unchanged for both supported UCSI versions. */
+		connector = val[udev->protocol->connector_offset] / 2;
+		change = val[udev->protocol->change_offset + 1] << 8 |
+			val[udev->protocol->change_offset];
+		flags = val[udev->protocol->flags_offset + 1] << 8 |
+			val[udev->protocol->flags_offset];
+		partner_type = UCSI_CONSTAT_PARTNER_TYPE(flags);
+		power_mode = UCSI_CONSTAT_PWR_OPMODE(flags);
+		partner_usb = !!(UCSI_CONSTAT_PARTNER_FLAGS(flags) &
+				 UCSI_CONSTAT_PARTNER_FLAG_USB);
+		if (connector == 1)
+			C1_analog_audio_present = partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO;
+		else if (connector == 2)
+			C2_analog_audio_present = partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO;
+		/* The stock board drives this separate analog-audio switch by number. */
+		gpiod_set_value_cansleep(udev->analog_audio_gpio,
+				       !!(C1_analog_audio_present | C2_analog_audio_present));
+
+		dev_type = CONNECT_DEVICE_NOT_CHANGE;
+		if (connector && change && partner_usb) {
+			if ((partner_type == UCSI_CONSTAT_PARTNER_TYPE_DFP ||
+			     partner_type == UCSI_CONSTAT_PARTNER_TYPE_UFP) &&
+			    (power_mode == UCSI_CONSTAT_PWR_OPMODE_TYPEC1_5 ||
+			     power_mode == UCSI_CONSTAT_PWR_OPMODE_DEFAULT ||
+			     power_mode == UCSI_CONSTAT_PWR_OPMODE_BC ||
+			     power_mode == UCSI_CONSTAT_PWR_OPMODE_TYPEC3_0))
+				dev_type = CONNECT_OTG_DEVICE;
+			else if ((partner_type == UCSI_CONSTAT_PARTNER_TYPE_DFP &&
+				  power_mode == UCSI_CONSTAT_PWR_OPMODE_PD) ||
+				 (!partner_type && (power_mode == UCSI_CONSTAT_PWR_OPMODE_TYPEC1_5 ||
+						    power_mode == UCSI_CONSTAT_PWR_OPMODE_DEFAULT)))
+				dev_type = CONNECT_PC_DEVICE;
+			else if (!partner_type && power_mode == UCSI_CONSTAT_PWR_OPMODE_TYPEC3_0)
+				dev_type = CONNECT_AC_ADAPTER;
+			else if (partner_type == UCSI_CONSTAT_PARTNER_TYPE_CABLE_AND_UFP &&
+				 (power_mode & (BIT(0) | BIT(2))))
+				dev_type = CONNECT_USB_HUB_DEVICE;
+			else if (partner_type == UCSI_CONSTAT_PARTNER_TYPE_UFP &&
+				 power_mode == UCSI_CONSTAT_PWR_OPMODE_PD)
+				dev_type = connector == 2 && !C1_d_present ?
+					CONNECT_C2_PD_DEVICE : CONNECT_DP_DEVICE;
+			else if (partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO)
+				dev_type = CONNECT_ANALOG_AUDIO;
+			else
+				dev_type = CONNECT_UNKNOWN_DEVICE;
+		} else if (connector && change) {
+			if (partner_type == UCSI_CONSTAT_PARTNER_TYPE_CABLE_AND_UFP &&
+			    power_mode == UCSI_CONSTAT_PWR_OPMODE_PD)
+				dev_type = CONNECT_DP_DEVICE;
+			else if ((partner_type == UCSI_CONSTAT_PARTNER_TYPE_DFP ||
+				  partner_type == UCSI_CONSTAT_PARTNER_TYPE_UFP) &&
+				 power_mode == UCSI_CONSTAT_PWR_OPMODE_PD)
+				dev_type = CONNECT_AC_ADAPTER;
+			else if (partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO)
+				dev_type = CONNECT_ANALOG_AUDIO;
+			else
+				dev_type = CONNECT_UNKNOWN_DEVICE;
+		}
+		if (connector && change && !flags)
+			dev_type = CONNECT_DEVICE_NULL;
+
+		switch (dev_type) {
+		case CONNECT_OTG_DEVICE:
+		case CONNECT_PC_DEVICE:
+		case CONNECT_USB_HUB_DEVICE:
+		case CONNECT_C2_PD_DEVICE:
+			if (connector == 1)
+				C1_d_present = 1;
+			else if (connector == 2)
+				C2_d_present = 1;
+			break;
+		case CONNECT_DP_DEVICE:
+			if (connector == 1)
+				C1_d_present = 0;
+			break;
+		case CONNECT_AC_ADAPTER:
+		case CONNECT_ANALOG_AUDIO:
+			if (connector == 1)
+				C1_d_present = 0;
+			else if (connector == 2)
+				C2_d_present = 0;
+			break;
+		case CONNECT_DEVICE_NULL:
+			if (connector == 1)
+				C1_d_present = 0;
+			else if (connector == 2)
+				C2_d_present = 0;
+			/* Stock skips the fan override for a disconnect response. */
+			goto select_data_port;
+		default:
+			break;
+		}
+		if (ext_fan_connected)
+			C1_d_present = 1;
+
+	select_data_port:
+		if (C1_d_present == 1 && C2_d_present == 0) {
+			gpiod_set_value_cansleep(udev->switch_dpmd_gpio, 0);
+			usleep_range(10000, 11000);
+		} else if (C1_d_present == 0 && C2_d_present == 1) {
+			gpiod_set_value_cansleep(udev->switch_dpmd_gpio, 1);
+			usleep_range(10000, 11000);
+		} else if (C1_d_present == 1 && C2_d_present == 1) {
+			gpiod_set_value_cansleep(udev->switch_dpmd_gpio, 0);
+			usleep_range(10000, 11000);
+		}
+		gpio_value = gpiod_get_value_cansleep(udev->switch_dpmd_gpio);
+		cc_port_num_2 = connector;
+		cc_port_num = cc_port_num_1 | cc_port_num_2;
+		if (udev->ucsi && udev->ucsi->connector &&
+		    udev->ucsi->cap.num_connectors >= 2 && connector == 2 && partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO)
+			typec_set_mode(udev->ucsi->connector[1].port, TYPEC_MODE_AUDIO);
+		else if (udev->ucsi && udev->ucsi->connector &&
+			 udev->ucsi->cap.num_connectors >= 2 && connector == 2 && change && !flags)
+			typec_set_mode(udev->ucsi->connector[1].port, TYPEC_STATE_SAFE);
+		if (val[udev->protocol->connector_offset] >= 2)
+			pr_info("[LENOVO_UCSI] port_num = %d, change = 0x%04X, flag = 0x%04X, partner_type = %d, usb = %d, opmode = %d, dev_type = %d, c1_data = %d, c2_data = %d, gpio = %d\n",
+				connector, change, flags, partner_type, partner_usb,
+				power_mode, dev_type, C1_d_present, C2_d_present,
+				gpio_value);
 	}
 
 	memset(&udev->rx_buf, 0, sizeof(udev->rx_buf));
@@ -275,6 +454,10 @@ static int handle_ucsi_notify(struct ucsi_dev *udev, void *data, size_t len)
 	}
 
 	con_num = UCSI_CCI_CONNECTOR(cci);
+	if (udev->protocol) {
+		cc_port_num_1 = con_num;
+		cc_port_num = cc_port_num_1 | cc_port_num_2;
+	}
 	pr_debug("con_num: %u num_connectors: %u\n", con_num,
 		udev->ucsi->cap.num_connectors);
 
@@ -468,6 +651,8 @@ static int ucsi_qti_read(struct ucsi_dev *udev, unsigned int offset,
 	memcpy((u8 *)val, &udev->rx_buf.buf[offset], val_len);
 	atomic_set(&udev->rx_valid, 0);
 	ucsi_log(udev, "read:", offset, (u8 *)val, val_len);
+	if (udev->protocol && val_len == 4 && ((u8 *)val)[0])
+		con_now = ((u8 *)val)[0] / 2;
 
 out:
 	mutex_unlock(&udev->read_lock);
@@ -589,6 +774,38 @@ static void ucsi_qti_state_cb(void *priv, enum pmic_glink_state state)
 	}
 }
 
+static void ucsi_qti_release_audio_gpio(void *data)
+{
+	gpiochip_free_own_desc(data);
+}
+
+static int ucsi_qti_init_gpios(struct device *dev, struct ucsi_dev *udev)
+{
+	struct of_phandle_args args;
+	struct gpio_device *gdev;
+	int rc;
+
+	udev->switch_dpmd_gpio = devm_gpiod_get_index(dev, NULL, 0, GPIOD_OUT_LOW);
+	if (IS_ERR(udev->switch_dpmd_gpio))
+		return PTR_ERR(udev->switch_dpmd_gpio);
+	rc = of_parse_phandle_with_args(dev->of_node,
+			"lenovo,analog-audio-switch-gpios", "#gpio-cells", 0, &args);
+	if (rc)
+		return rc;
+	gdev = gpio_device_find_by_fwnode(of_fwnode_handle(args.np));
+	of_node_put(args.np);
+	if (!gdev)
+		return -EPROBE_DEFER;
+	udev->analog_audio_gpio = gpiochip_request_own_desc(gpio_device_get_chip(gdev),
+							args.args[0], "lenovo-analog-audio", args.args[1],
+							GPIOD_OUT_LOW);
+	gpio_device_put(gdev);
+	if (IS_ERR(udev->analog_audio_gpio))
+		return PTR_ERR(udev->analog_audio_gpio);
+	return devm_add_action_or_reset(dev, ucsi_qti_release_audio_gpio,
+				      udev->analog_audio_gpio);
+}
+
 static int ucsi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -600,6 +817,13 @@ static int ucsi_probe(struct platform_device *pdev)
 	udev = devm_kzalloc(dev, sizeof(*udev), GFP_KERNEL);
 	if (!udev)
 		return -ENOMEM;
+
+	udev->protocol = device_get_match_data(dev);
+	if (udev->protocol) {
+		rc = ucsi_qti_init_gpios(dev, udev);
+		if (rc)
+			return dev_err_probe(dev, rc, "dual-port GPIO setup failed\n");
+	}
 
 	INIT_WORK(&udev->setup_work, ucsi_qti_setup_work);
 	INIT_WORK(&udev->unregister_work, ucsi_qti_unregister_work);
@@ -695,6 +919,7 @@ static void ucsi_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id ucsi_match_table[] = {
+	{ .compatible = "lenovo,dual-port-ucsi-glink-v1", .data = &lenovo_dual_port_v1 },
 	{.compatible = "qcom,ucsi-glink"},
 	{},
 };
