@@ -43,5 +43,32 @@ static inline int fsa4480_unreg_notifier(struct notifier_block *nb,
 }
 #endif /* CONFIG_QCOM_FSA4480_I2C */
 
+#if IS_ENABLED(CONFIG_QCOM_FSA4480_SUB_I2C)
+int fsa4480_sub_switch_event(struct device_node *node,
+			 enum fsa_function event);
+int fsa4480_sub_reg_notifier(struct notifier_block *nb,
+			 struct device_node *node);
+int fsa4480_sub_unreg_notifier(struct notifier_block *nb,
+			   struct device_node *node);
+#else
+static inline int fsa4480_sub_switch_event(struct device_node *node,
+				       enum fsa_function event)
+{
+	return 0;
+}
+
+static inline int fsa4480_sub_reg_notifier(struct notifier_block *nb,
+				       struct device_node *node)
+{
+	return 0;
+}
+
+static inline int fsa4480_sub_unreg_notifier(struct notifier_block *nb,
+					 struct device_node *node)
+{
+	return 0;
+}
+#endif /* CONFIG_QCOM_FSA4480_I2C */
+
 #endif /* FSA4480_I2C_H */
 
