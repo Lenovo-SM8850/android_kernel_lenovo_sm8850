@@ -10,6 +10,7 @@ def register_modules(registry):
         srcs = [
             # do not sort
             "drivers/power/supply/qti_battery_charger.c",
+            "drivers/power/supply/lenovo_charge_sysfs.h",
             "drivers/power/supply/qti_charger_boost_lib.c",
             "drivers/power/supply/qti_charger_boost_lib.h",
             "drivers/power/supply/qti_typec_class.c",
