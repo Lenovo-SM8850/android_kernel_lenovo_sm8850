@@ -2910,6 +2910,7 @@ static const struct adsp_data canoe_adsp_resource = {
 	.sysmon_name = "adsp",
 	.ssctl_id = 0x14,
 	.uses_elf64 = true,
+	.auto_boot = true,
 	.crash_reason_stack = 660,
 	.smem_host_id = 2,
 };
@@ -2926,6 +2927,7 @@ static const struct adsp_data canoe_cdsp_resource = {
 	.sysmon_name = "cdsp",
 	.ssctl_id = 0x17,
 	.uses_elf64 = true,
+	.auto_boot = true,
 	.crash_reason_stack = 660,
 	.smem_host_id = 5,
 };
@@ -2961,6 +2963,8 @@ static const struct adsp_data canoe_soccp_resource = {
 	.ssr_name = "soccp",
 	.sysmon_name = "soccp",
 	.early_boot = true,
+	/* Attach to bootloader-started SOCCP so PMIC GLINK becomes available. */
+	.auto_boot = true,
 };
 
 static const struct adsp_data ravelin_adsp_resource = {
