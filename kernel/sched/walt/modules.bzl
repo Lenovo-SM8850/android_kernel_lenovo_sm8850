@@ -12,6 +12,7 @@ def register_modules(registry):
             "kernel/sched/walt/walt_debug.h",
             "kernel/sched/walt/voter.h",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(
@@ -61,6 +62,7 @@ def register_modules(registry):
             # do not sort
             "drivers/soc/qcom/socinfo",
             "drivers/soc/qcom/smem",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 

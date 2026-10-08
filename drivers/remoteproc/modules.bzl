@@ -40,6 +40,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -82,6 +83,7 @@ def register_modules(registry):
             "arch/arm64/gunyah/gh_arm_drv",
             "drivers/firmware/qcom/qcom_scm_smci",
             "drivers/firmware/qcom/si_core/si_core_module",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -103,6 +105,7 @@ def register_modules(registry):
             "drivers/misc/qseecom_proxy",
             "drivers/soc/qcom/slatecom_spi",
             "drivers/soc/qcom/slatecom_interface",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -141,6 +144,7 @@ def register_modules(registry):
             "arch/arm64/gunyah/gh_arm_drv",
             "drivers/firmware/qcom/qcom_scm_smci",
             "drivers/firmware/qcom/si_core/si_core_module",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -173,6 +177,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -204,5 +209,6 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )

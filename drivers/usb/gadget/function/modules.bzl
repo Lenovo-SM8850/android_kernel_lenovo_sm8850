@@ -11,6 +11,7 @@ def register_modules(registry):
             "drivers/usb/gadget/function/ack-rndis/u_ether.h",
             "drivers/usb/gadget/function/ack-rndis/u_ether_configfs.h",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(
@@ -36,6 +37,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -106,6 +108,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 

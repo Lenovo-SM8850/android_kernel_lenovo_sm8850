@@ -7,6 +7,7 @@ def register_modules(registry):
             # do not sort
             "drivers/edac/qcom_edac.c",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(
@@ -17,4 +18,5 @@ def register_modules(registry):
             # do not sort
             "drivers/edac/kryo_arm64_edac.c",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )

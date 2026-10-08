@@ -656,6 +656,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -739,6 +740,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -766,6 +768,7 @@ def register_modules(registry):
             "drivers/iommu/msm_dma_iommu_mapping",
             "drivers/soc/qcom/mem_buf/mem_buf_dev",
             "drivers/soc/qcom/secure_buffer",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -798,6 +801,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -832,6 +836,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -866,6 +871,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -883,6 +889,7 @@ def register_modules(registry):
             # do not sort
             "drivers/clk/qcom/clk-dummy",
             "drivers/clk/qcom/clk-qcom",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -905,6 +912,7 @@ def register_modules(registry):
             "drivers/regulator/proxy-consumer",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -922,6 +930,7 @@ def register_modules(registry):
             # do not sort
             "drivers/clk/qcom/clk-dummy",
             "drivers/clk/qcom/clk-qcom",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -944,6 +953,7 @@ def register_modules(registry):
             "drivers/regulator/proxy-consumer",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -978,6 +988,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1000,6 +1011,7 @@ def register_modules(registry):
             "drivers/regulator/proxy-consumer",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1034,6 +1046,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1068,6 +1081,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1102,6 +1116,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1380,6 +1395,7 @@ def register_modules(registry):
             "drivers/regulator/proxy-consumer",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1402,6 +1418,7 @@ def register_modules(registry):
             "drivers/regulator/proxy-consumer",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1424,6 +1441,7 @@ def register_modules(registry):
             "drivers/regulator/proxy-consumer",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1441,6 +1459,7 @@ def register_modules(registry):
             # do not sort
             "drivers/clk/qcom/clk-dummy",
             "drivers/clk/qcom/clk-qcom",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1475,6 +1494,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1509,6 +1529,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1531,6 +1552,7 @@ def register_modules(registry):
             "drivers/regulator/proxy-consumer",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -1553,6 +1575,7 @@ def register_modules(registry):
             "drivers/regulator/proxy-consumer",
             "drivers/soc/qcom/crm-v2",
             "kernel/trace/qcom_ipc_logging",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -2824,6 +2847,7 @@ def register_modules(registry):
             # do not sort
             "drivers/regulator/debug-regulator",
             "drivers/regulator/proxy-consumer",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 

@@ -40,6 +40,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -75,6 +76,7 @@ def register_modules(registry):
             # do not sort
             "drivers/soc/qcom/mem-prot",
             "drivers/virt/gunyah/gh_rm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -127,6 +129,7 @@ def register_modules(registry):
             "drivers/virt/gunyah/gh_msgq",
             "drivers/virt/gunyah/gh_dbl",
             "arch/arm64/gunyah/gh_arm_drv",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -148,6 +151,7 @@ def register_modules(registry):
             "arch/arm64/gunyah/gh_arm_drv",
             "drivers/firmware/qcom/qcom-scm",
             "drivers/soc/qcom/secure_buffer",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
@@ -198,6 +202,7 @@ def register_modules(registry):
             # do not sort
             "drivers/virt/gunyah/gh_virtio_pci_edge.c",
         ],
+            deps = ["//vendor/lenovo/sm8850:private_module_headers"],
     )
 
     registry.register(

@@ -63,6 +63,7 @@ def register_modules(registry):
             "drivers/firmware/arm_ffa_transport",
             "drivers/firmware/arm_ffa",
             "drivers/soc/qcom/hab/msm_hab",
+                    "//vendor/lenovo/sm8850:private_module_headers",
         ],
     )
 
