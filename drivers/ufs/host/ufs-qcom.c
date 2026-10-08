@@ -45,6 +45,7 @@
 #include <ufs/ufshci.h>
 #include <ufs/ufs_quirks.h>
 #include <ufs/ufshcd-crypto-qti.h>
+#include "vendor/ufsfeature.h"
 
 #define MCQ_QCFGPTR_MASK	GENMASK(7, 0)
 #define MCQ_QCFGPTR_UNIT	0x200
@@ -4593,6 +4594,10 @@ static void ufs_qcom_event_notify(struct ufs_hba *hba,
 	bool disable_ber = true;
 
 	switch (evt) {
+	case UFS_EVT_DEV_RESET:
+	case UFS_EVT_HOST_RESET:
+		ufsf_reset_host(hba);
+		break;
 	case UFS_EVT_PA_ERR:
 		if (disable_ber) {
 			dev_err(hba->dev, "%s: BER is disabled.\n", __func__);
@@ -5191,6 +5196,8 @@ static int ufs_qcom_device_reset(struct ufs_hba *hba)
 	/* reset gpio is optional */
 	if (!host->device_reset)
 		return -EOPNOTSUPP;
+
+	ufsf_reset_host(hba);
 
 	/*
 	 * The UFS device shall detect reset pulses of 1us, sleep for 10us to
@@ -6416,6 +6423,10 @@ static int ufs_qcom_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, err, "ufshcd_pltfrm_init() failed\n");
 
 	ufs_qcom_register_hooks();
+	if (ufs_id == UFS_VENDOR_SAMSUNG) {
+		ufsf_set_init(platform_get_drvdata(pdev));
+		ufsf_start(platform_get_drvdata(pdev));
+	}
 	return err;
 }
 
@@ -6453,7 +6464,11 @@ static void ufs_qcom_remove(struct platform_device *pdev)
 		atomic_notifier_chain_unregister(&panic_notifier_list,
 				&host->ufs_qcom_panic_nb);
 
+	if (ufs_id == UFS_VENDOR_SAMSUNG)
+		ufsf_stop(hba);
 	ufshcd_remove(hba);
+	if (ufs_id == UFS_VENDOR_SAMSUNG)
+		ufsf_exit(hba);
 	platform_device_msi_free_irqs_all(hba->dev);
 }
 
@@ -6507,6 +6522,8 @@ static int ufs_qcom_system_resume(struct device *dev)
 #ifdef CONFIG_PM_SLEEP
 static int ufs_qcom_suspend_prepare(struct device *dev)
 {
+	int ret;
+	enum ufs_pm_level spm_lvl;
 	struct ufs_hba *hba;
 	struct ufs_qcom_host *host;
 
@@ -6519,6 +6536,7 @@ static int ufs_qcom_suspend_prepare(struct device *dev)
 	host = ufshcd_get_variant(hba);
 
 	host->spm_lvl_prev = hba->spm_lvl;
+	spm_lvl = hba->spm_lvl;
 
 	/*
 	 * For deep sleep, if "set_ds_spm_level" flag is true, set the
@@ -6528,22 +6546,37 @@ static int ufs_qcom_suspend_prepare(struct device *dev)
 	switch (host->ufs_pm_mode) {
 	case UFS_QCOM_SYSFS_NONE:
 		if (host->set_ds_spm_level && (pm_suspend_target_state == PM_SUSPEND_MEM))
-			hba->spm_lvl = UFS_PM_LVL_5;
+			spm_lvl = UFS_PM_LVL_5;
 		break;
 	case UFS_QCOM_SYSFS_DEEPSLEEP:
 		if (host->set_ds_spm_level)
-			hba->spm_lvl = UFS_PM_LVL_5;
+			spm_lvl = UFS_PM_LVL_5;
 		break;
 	case UFS_QCOM_SYSFS_S2R:
 	default:
 		break;
 	}
 
+	ufsf_suspend_prepare(hba);
+	if (spm_lvl != hba->spm_lvl && hba->ufs_device_wlun) {
+		down(&hba->host_sem);
+		ret = ufshcd_rpm_get_sync(hba);
+		if (ret >= 0 || ret == -EACCES)
+			ret = ufshcd_suspend_prepare(dev);
+		ufshcd_rpm_put(hba);
+		up(&hba->host_sem);
+	} else {
+		ret = ufshcd_suspend_prepare(dev);
+	}
+	if (ret) {
+		ufsf_resume_complete(hba);
+		return ret;
+	}
+	hba->spm_lvl = spm_lvl;
 	if (hba->spm_lvl != host->spm_lvl_prev)
 		dev_info(dev, "spm level is changed from %d to %d\n",
 			host->spm_lvl_prev, hba->spm_lvl);
-
-	return ufshcd_suspend_prepare(dev);
+	return 0;
 }
 
 static void ufs_qcom_resume_complete(struct device *dev)
@@ -6557,6 +6590,7 @@ static void ufs_qcom_resume_complete(struct device *dev)
 	}
 
 	hba = dev_get_drvdata(dev);
+	ufsf_resume_complete(hba);
 	host = ufshcd_get_variant(hba);
 
 	if (host->set_ds_spm_level)
