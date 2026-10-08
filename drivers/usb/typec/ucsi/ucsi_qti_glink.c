@@ -20,6 +20,8 @@
 #include <linux/usb/lenovo_ucsi.h>
 #include <linux/delay.h>
 #include <linux/usb/typec_altmode.h>
+#include <linux/usb/typec_mux.h>
+#include <linux/usb/role.h>
 
 #include "drivers/usb/typec/ucsi/ucsi.h"
 
@@ -112,9 +114,17 @@ struct ucsi_wire_protocol {
 	u8 connector_offset;
 	u8 change_offset;
 	u8 flags_offset;
+	bool analog_audio_switch;
 };
 
 static const struct ucsi_wire_protocol lenovo_dual_port_v1 = {
+	.connector_offset = 16,
+	.change_offset = 28,
+	.flags_offset = 30,
+	.analog_audio_switch = true,
+};
+
+static const struct ucsi_wire_protocol lenovo_dual_port_v2 = {
 	.connector_offset = 16,
 	.change_offset = 28,
 	.flags_offset = 30,
@@ -138,6 +148,7 @@ struct ucsi_dev {
 	unsigned long			flags;
 	atomic_t			rx_valid;
 	struct work_struct		setup_work;
+	struct delayed_work		supplier_work;
 	struct work_struct		unregister_work;
 	atomic_t			state;
 	bool				remoteproc_timestamp_en;
@@ -273,9 +284,11 @@ static int handle_ucsi_read_ack(struct ucsi_dev *udev, void *data, size_t len)
 			C1_analog_audio_present = partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO;
 		else if (connector == 2)
 			C2_analog_audio_present = partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO;
-		/* The stock board drives this separate analog-audio switch by number. */
-		gpiod_set_value_cansleep(udev->analog_audio_gpio,
-				       !!(C1_analog_audio_present | C2_analog_audio_present));
+		/* The board uses a separate analog-audio switch. */
+		if (udev->protocol->analog_audio_switch)
+			gpiod_set_value_cansleep(udev->analog_audio_gpio,
+					       !!(C1_analog_audio_present |
+						  C2_analog_audio_present));
 
 		dev_type = CONNECT_DEVICE_NOT_CHANGE;
 		if (connector && change && partner_usb) {
@@ -691,9 +704,52 @@ static const struct ucsi_operations ucsi_qti_ops = {
 	.async_control = ucsi_qti_async_control,
 };
 
+/* Audio imports UCSI state through FSA, so module ordering cannot break
+ * this supplier cycle. Keep the GLINK client bound while the actual role and
+ * sound-node mux providers register, before starting the core's bounded init.
+ */
+static int ucsi_dual_port_suppliers_ready(struct ucsi_dev *udev)
+{
+	struct fwnode_handle *child;
+	struct usb_role_switch *role;
+	struct typec_mux *mux;
+	int ret;
+
+	if (udev->protocol != &lenovo_dual_port_v2)
+		return 0;
+
+	device_for_each_child_node(udev->dev, child) {
+		role = fwnode_usb_role_switch_get(child);
+		if (IS_ERR(role)) {
+			ret = PTR_ERR(role);
+			fwnode_handle_put(child);
+			return ret;
+		}
+		usb_role_switch_put(role);
+		mux = fwnode_typec_mux_get(child);
+		if (IS_ERR(mux)) {
+			ret = PTR_ERR(mux);
+			fwnode_handle_put(child);
+			return ret;
+		}
+		typec_mux_put(mux);
+	}
+	return 0;
+}
+
 static int ucsi_setup(struct ucsi_dev *udev)
 {
 	int rc;
+
+	rc = ucsi_dual_port_suppliers_ready(udev);
+	if (rc == -EPROBE_DEFER) {
+		if (atomic_read(&udev->state) == PMIC_GLINK_STATE_UP)
+			queue_delayed_work(system_long_wq, &udev->supplier_work,
+					   msecs_to_jiffies(1000));
+		return 0;
+	}
+	if (rc)
+		return rc;
 
 	if (udev->ucsi) {
 		dev_err(udev->dev, "ucsi is not NULL\n");
@@ -701,6 +757,15 @@ static int ucsi_setup(struct ucsi_dev *udev)
 	}
 
 	mutex_lock(&udev->state_lock);
+	if (udev->protocol == &lenovo_dual_port_v2 && udev->ucsi) {
+		mutex_unlock(&udev->state_lock);
+		return 0;
+	}
+	if (udev->protocol == &lenovo_dual_port_v2 &&
+	    atomic_read(&udev->state) == PMIC_GLINK_STATE_DOWN) {
+		mutex_unlock(&udev->state_lock);
+		return -ENOTCONN;
+	}
 	udev->ucsi = ucsi_create(udev->dev, &ucsi_qti_ops);
 	if (IS_ERR(udev->ucsi)) {
 		rc = PTR_ERR(udev->ucsi);
@@ -723,6 +788,15 @@ static int ucsi_setup(struct ucsi_dev *udev)
 
 	mutex_unlock(&udev->state_lock);
 	return 0;
+}
+
+static void ucsi_qti_supplier_work(struct work_struct *work)
+{
+	struct ucsi_dev *udev = container_of(to_delayed_work(work),
+					   struct ucsi_dev, supplier_work);
+
+	if (atomic_read(&udev->state) == PMIC_GLINK_STATE_UP && !udev->ucsi)
+		ucsi_setup(udev);
 }
 
 static void ucsi_qti_setup_work(struct work_struct *work)
@@ -763,6 +837,7 @@ static void ucsi_qti_state_cb(void *priv, enum pmic_glink_state state)
 	switch (state) {
 	case PMIC_GLINK_STATE_DOWN:
 		cancel_work_sync(&udev->setup_work);
+		cancel_delayed_work_sync(&udev->supplier_work);
 		schedule_work(&udev->unregister_work);
 		break;
 	case PMIC_GLINK_STATE_UP:
@@ -788,6 +863,9 @@ static int ucsi_qti_init_gpios(struct device *dev, struct ucsi_dev *udev)
 	udev->switch_dpmd_gpio = devm_gpiod_get_index(dev, NULL, 0, GPIOD_OUT_LOW);
 	if (IS_ERR(udev->switch_dpmd_gpio))
 		return PTR_ERR(udev->switch_dpmd_gpio);
+	if (!udev->protocol->analog_audio_switch)
+		return 0;
+
 	rc = of_parse_phandle_with_args(dev->of_node,
 			"lenovo,analog-audio-switch-gpios", "#gpio-cells", 0, &args);
 	if (rc)
@@ -826,6 +904,7 @@ static int ucsi_probe(struct platform_device *pdev)
 	}
 
 	INIT_WORK(&udev->setup_work, ucsi_qti_setup_work);
+	INIT_DELAYED_WORK(&udev->supplier_work, ucsi_qti_supplier_work);
 	INIT_WORK(&udev->unregister_work, ucsi_qti_unregister_work);
 	mutex_init(&udev->read_lock);
 	mutex_init(&udev->write_lock);
@@ -903,10 +982,16 @@ static void ucsi_remove(struct platform_device *pdev)
 	int rc;
 
 	debugfs_remove_recursive(udev->debugfs_dir);
+	if (udev->protocol == &lenovo_dual_port_v2)
+		atomic_set(&udev->state, PMIC_GLINK_STATE_DOWN);
 	cancel_work_sync(&udev->setup_work);
+	if (udev->protocol == &lenovo_dual_port_v2)
+		cancel_delayed_work_sync(&udev->supplier_work);
 	if (!cancel_work_sync(&udev->unregister_work)) {
-		ucsi_unregister(udev->ucsi);
-		ucsi_destroy(udev->ucsi);
+		if (udev->protocol != &lenovo_dual_port_v2 || udev->ucsi) {
+			ucsi_unregister(udev->ucsi);
+			ucsi_destroy(udev->ucsi);
+		}
 	}
 
 	rc = pmic_glink_unregister_client(udev->client);
@@ -919,6 +1004,7 @@ static void ucsi_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id ucsi_match_table[] = {
+	{ .compatible = "lenovo,dual-port-ucsi-glink-v2", .data = &lenovo_dual_port_v2 },
 	{ .compatible = "lenovo,dual-port-ucsi-glink-v1", .data = &lenovo_dual_port_v1 },
 	{.compatible = "qcom,ucsi-glink"},
 	{},
