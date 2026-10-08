@@ -19,6 +19,9 @@
 #include <linux/reboot.h>
 #include <linux/regmap.h>
 #include <linux/suspend.h>
+#include <linux/power_supply.h>
+#include <linux/workqueue.h>
+
 
 #define PON_REV2			0x01
 
@@ -107,6 +110,12 @@ struct pm8941_pwrkey {
 	ktime_t sw_debounce_end_time;
 	u32 req_delay;
 	bool last_status;
+	bool charger_coordination;
+	struct delayed_work charger_timeout;
+	bool forced_shutdown;
+	bool charger_notified;
+	bool irq_frozen;
+
 	bool pull_up;
 	const struct pm8941_data *data;
 };
@@ -173,6 +182,42 @@ static int pm8941_reboot_notify(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 
+/* Keep PS_HOLD and input reporting PMIC-owned during charger coordination. */
+static int charger_key_pwrkey_charger_notify(struct pm8941_pwrkey *pwrkey, bool enable)
+{
+	struct power_supply *usb = power_supply_get_by_name("usb");
+	union power_supply_propval value = { .intval = enable };
+	int ret;
+
+	if (!usb)
+		return -ENODEV;
+	ret = power_supply_set_property(usb, POWER_SUPPLY_PROP_ONLINE, &value);
+	power_supply_put(usb);
+	return ret;
+}
+
+static void charger_key_pwrkey_timeout(struct work_struct *work)
+{
+	struct pm8941_pwrkey *pwrkey = container_of(to_delayed_work(work),
+		struct pm8941_pwrkey, charger_timeout);
+
+	if (READ_ONCE(pwrkey->forced_shutdown) &&
+	    !charger_key_pwrkey_charger_notify(pwrkey, true))
+		pwrkey->charger_notified = true;
+}
+
+static void charger_key_pwrkey_cancel(void *data)
+{
+	struct pm8941_pwrkey *pwrkey = data;
+
+	WRITE_ONCE(pwrkey->forced_shutdown, false);
+	cancel_delayed_work_sync(&pwrkey->charger_timeout);
+	if (pwrkey->charger_notified) {
+		charger_key_pwrkey_charger_notify(pwrkey, false);
+		pwrkey->charger_notified = false;
+	}
+}
+
 static irqreturn_t pm8941_pwrkey_irq(int irq, void *_data)
 {
 	struct pm8941_pwrkey *pwrkey = _data;
@@ -191,6 +236,18 @@ static irqreturn_t pm8941_pwrkey_irq(int irq, void *_data)
 	err = regmap_read(pwrkey->regmap, pwrkey->baseaddr + PON_RT_STS, &sts);
 	if (err)
 		return IRQ_HANDLED;
+
+	if (pwrkey->charger_coordination && pwrkey->data->status_bit & (PON_GEN3_KPDPWR_N_SET | PON_GEN3_RESIN_N_SET)) {
+		bool forced = (sts & (PON_GEN3_KPDPWR_N_SET | PON_GEN3_RESIN_N_SET)) ==
+			(PON_GEN3_KPDPWR_N_SET | PON_GEN3_RESIN_N_SET);
+
+		if (forced && !READ_ONCE(pwrkey->forced_shutdown)) {
+			WRITE_ONCE(pwrkey->forced_shutdown, true);
+			schedule_delayed_work(&pwrkey->charger_timeout, msecs_to_jiffies(5000));
+		} else if (!forced) {
+			charger_key_pwrkey_cancel(pwrkey);
+		}
+	}
 
 	sts &= pwrkey->data->status_bit;
 
@@ -361,12 +418,15 @@ static int pm8941_pwrkey_restore(struct device *dev)
 	struct pm8941_pwrkey *pwrkey = dev_get_drvdata(dev);
 	int error = 0;
 
+	if (pwrkey->irq_frozen)
+		goto restore_hardware;
 	if (pwrkey->irq > 0) {
 		pr_debug("Disabling and freeing pwrkey interrupts\n");
 		disable_irq(pwrkey->irq);
 		devm_free_irq(dev, pwrkey->irq, pwrkey);
 	}
 
+restore_hardware:
 	error = pm8941_pwrkey_hw_init(pwrkey);
 	if (error) {
 		dev_err(dev, "Failed to initialize H/W error :%d\n", error);
@@ -381,6 +441,8 @@ static int pm8941_pwrkey_restore(struct device *dev)
 		dev_err(dev, "failed requesting IRQ: %d\n", error);
 		return error;
 	}
+
+	pwrkey->irq_frozen = false;
 
 	return 0;
 }
@@ -408,7 +470,25 @@ static int pm8941_pwrkey_resume(struct device *dev)
 	return 0;
 }
 
+static int charger_key_pwrkey_freeze(struct device *dev)
+{
+	struct pm8941_pwrkey *pwrkey = dev_get_drvdata(dev);
+
+	if (!pwrkey->charger_coordination)
+		return 0;
+
+	if (pwrkey->irq > 0 && !pwrkey->irq_frozen) {
+		disable_irq(pwrkey->irq);
+		devm_free_irq(dev, pwrkey->irq, pwrkey);
+		pwrkey->irq_frozen = true;
+	}
+	/* No IRQ can enqueue a new timeout after this synchronous cancellation. */
+	charger_key_pwrkey_cancel(pwrkey);
+	return 0;
+}
+
 static const struct dev_pm_ops pm8941_pwr_key_pm_ops = {
+	.freeze = charger_key_pwrkey_freeze,
 	.restore = pm8941_pwrkey_restore,
 	.suspend = pm8941_pwrkey_suspend,
 	.resume = pm8941_pwrkey_resume,
@@ -462,6 +542,14 @@ static int pm8941_pwrkey_probe(struct platform_device *pdev)
 		}
 	}
 
+	pwrkey->charger_coordination = of_property_read_bool(of_root, "lenovo,charger-key-coordination");
+	if (pwrkey->charger_coordination) {
+		INIT_DELAYED_WORK(&pwrkey->charger_timeout, charger_key_pwrkey_timeout);
+		error = devm_add_action_or_reset(&pdev->dev, charger_key_pwrkey_cancel, pwrkey);
+		if (error)
+			return error;
+
+	}
 	pwrkey->req_delay = req_delay;
 	pwrkey->pull_up = pull_up;
 
