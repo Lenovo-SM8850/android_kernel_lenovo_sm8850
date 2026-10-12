@@ -5646,7 +5646,7 @@ skip_resource_init:
 		sdhci_msm_start_signal_voltage_switch;
 	host->mmc_host_ops.execute_tuning = sdhci_msm_execute_tuning;
 
-	if (!strcmp(dev_name(dev), "8804000.sdhci")) {
+	if (of_device_is_compatible(node, "lenovo,baldur-bh201-sdhci-v1")) {
 		pr_info("BH201 patch is applied for hostname: %s, devname: %s\n",
 			mmc_hostname(host->mmc), dev_name(dev));
 		sdhci_bh201_parse(host->mmc);
