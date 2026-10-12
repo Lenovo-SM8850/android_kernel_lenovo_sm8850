@@ -5,9 +5,12 @@
  */
 
 #include <linux/list.h>
-#include <linux/mutex.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/srcu.h>
 #include <linux/soc/qcom/panel_event_notifier.h>
+
+DEFINE_STATIC_SRCU(panel_event_notifier_srcu);
 
 struct panel_event_notifier_entry {
 	panel_event_notifier_handler handler;
@@ -106,6 +109,8 @@ void panel_event_notifier_unregister(void *cookie)
 	entry->pvt_data = NULL;
 	entry->tag = PANEL_EVENT_NOTIFICATION_NONE;
 	mutex_unlock(&panel_event_notifier_entries_lock);
+	/* Finish callbacks before a client frees its private storage. */
+	synchronize_srcu(&panel_event_notifier_srcu);
 }
 EXPORT_SYMBOL(panel_event_notifier_unregister);
 
@@ -130,12 +135,14 @@ void panel_event_notification_trigger(enum panel_event_notifier_tag tag,
 	panel_event_notifier_handler handler = NULL;
 	void *pvt_data;
 	int i;
+	int srcu_index;
 
 	if (!panel_event_notifier_tag_valid(tag)) {
 		pr_err("Invalid panel notifier tag\n");
 		return;
 	}
 
+	srcu_index = srcu_read_lock(&panel_event_notifier_srcu);
 	for (i = 0; i < PANEL_EVENT_NOTIFIER_CLIENT_MAX; i++) {
 		mutex_lock(&panel_event_notifier_entries_lock);
 		entry = &panel_event_notifier_entries[i];
@@ -163,6 +170,7 @@ void panel_event_notification_trigger(enum panel_event_notifier_tag tag,
 			handler(tag, notification, pvt_data);
 
 	}
+	srcu_read_unlock(&panel_event_notifier_srcu, srcu_index);
 }
 EXPORT_SYMBOL(panel_event_notification_trigger);
 
