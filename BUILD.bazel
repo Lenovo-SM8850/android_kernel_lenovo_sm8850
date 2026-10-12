@@ -4,6 +4,7 @@ load(":kleaf-scripts/msm_kernel_extensions.bzl", "define_top_level_rules")
 load("//build/kernel/kleaf:hermetic_tools.bzl", "hermetic_genrule")
 load("//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_uapi_headers")
 load(":common_sources.bzl", "define_common_upstream_files")
+load(":device_profiles.bzl", "define_sm8850_profiles")
 load(":kleaf-scripts/android_build.bzl", "define_common_android_rules")
 load(":kleaf-scripts/ddk_uapi_headers_cc_library.bzl", "ddk_uapi_headers_cc_library")
 load(":kleaf-scripts/dtbs.bzl", "define_qcom_dtb_setup")
@@ -68,6 +69,8 @@ define_common_android_rules()
 define_common_le_rules()
 
 define_common_upstream_files()
+
+define_sm8850_profiles()
 
 define_qcom_dtb_setup()
 
@@ -345,6 +348,13 @@ label_flag(
 
 define_canoe()
 
+# Keep the Canoe compatibility targets while exposing Baldur's profile explicitly.
+alias(name = "baldur_perf_dist", actual = ":canoe_perf_dist", visibility = ["//visibility:public"])
+alias(name = "baldur_perf_config", actual = ":canoe_perf_config", visibility = ["//visibility:public"])
+alias(name = "baldur_perf_all_modules", actual = ":canoe_perf_all_modules", visibility = ["//visibility:public"])
+alias(name = "baldur_perf_base_kernel", actual = ":canoe_perf_base_kernel", visibility = ["//visibility:public"])
+alias(name = "baldur_perf_lenovo_modules", actual = "//vendor/lenovo/sm8850-modules/lenovo:baldur_modules", visibility = ["//visibility:public"])
+
 define_waipio()
 
 define_alor_le()
@@ -421,5 +431,11 @@ filegroup(
 filegroup(
     name = "wuji_perf_load_lists",
     srcs = glob(["lenovo/wuji/dist.modules.load.*"]),
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "baldur_perf_load_lists",
+    actual = ":baldur_load_lists",
     visibility = ["//visibility:public"],
 )
