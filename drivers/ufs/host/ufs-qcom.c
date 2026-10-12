@@ -6379,6 +6379,17 @@ ret:
 	return is_bootdevice_ufs;
 }
 
+/* Device trees opt in to the shared Samsung UFS maintenance extensions. */
+static bool ufs_qcom_vendor_maintenance_enabled(struct device_node *np)
+{
+#ifdef CONFIG_LENOVO_SM8850_DEVICE_PROFILE
+	return np && ufs_id == UFS_VENDOR_SAMSUNG &&
+		of_property_read_bool(np, "lenovo,samsung-ufs-maintenance");
+#else
+	return ufs_id == UFS_VENDOR_SAMSUNG;
+#endif
+}
+
 /**
  * ufs_qcom_probe - probe routine of the driver
  * @pdev: pointer to Platform device handle
@@ -6423,7 +6434,7 @@ static int ufs_qcom_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, err, "ufshcd_pltfrm_init() failed\n");
 
 	ufs_qcom_register_hooks();
-	if (ufs_id == UFS_VENDOR_SAMSUNG) {
+	if (ufs_qcom_vendor_maintenance_enabled(np)) {
 		ufsf_set_init(platform_get_drvdata(pdev));
 		ufsf_start(platform_get_drvdata(pdev));
 	}
@@ -6464,10 +6475,10 @@ static void ufs_qcom_remove(struct platform_device *pdev)
 		atomic_notifier_chain_unregister(&panic_notifier_list,
 				&host->ufs_qcom_panic_nb);
 
-	if (ufs_id == UFS_VENDOR_SAMSUNG)
+	if (ufs_qcom_vendor_maintenance_enabled(pdev->dev.of_node))
 		ufsf_stop(hba);
 	ufshcd_remove(hba);
-	if (ufs_id == UFS_VENDOR_SAMSUNG)
+	if (ufs_qcom_vendor_maintenance_enabled(pdev->dev.of_node))
 		ufsf_exit(hba);
 	platform_device_msi_free_irqs_all(hba->dev);
 }

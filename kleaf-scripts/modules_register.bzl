@@ -124,6 +124,12 @@ def _generate_ddk_target(
         src_hdrs = [src for src in module.srcs if src.endswith(".h")]
         includes = (module.includes or []) + {paths.dirname(hdr): "" for hdr in src_hdrs}.keys()
 
+        extra_args = dict(module.extra_args)
+        if module.name == "drivers/ufs/host/ufs-qcom" and target_variant in ["canoe_perf", "wuji_perf"]:
+            extra_args["local_defines"] = extra_args.get("local_defines", []) + [
+                "CONFIG_LENOVO_SM8850_DEVICE_PROFILE=1",
+            ]
+
         ddk_module(
             name = "{}/{}".format(target_variant, module.name),
             out = module.out,
@@ -138,7 +144,7 @@ def _generate_ddk_target(
             kernel_build = ":{}_base_kernel".format(target_variant),
             config = ":{}_config".format(target_variant),
             visibility = ["//visibility:public"],
-            **module.extra_args
+            **extra_args
         )
 
     for module in phony_configurations:
