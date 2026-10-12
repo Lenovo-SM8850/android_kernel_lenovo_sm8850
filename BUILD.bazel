@@ -410,3 +410,16 @@ define_shikra_tuivm()
 define_shikra_vms()
 
 define_glymur()
+
+# Canonical ordered module-load manifests for the Lenovo device profiles.
+filegroup(
+    name = "baldur_load_lists",
+    srcs = glob(["lenovo/baldur/modules.load.*"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "wuji_perf_load_lists",
+    srcs = glob(["lenovo/wuji/dist.modules.load.*"]),
+    visibility = ["//visibility:public"],
+)
