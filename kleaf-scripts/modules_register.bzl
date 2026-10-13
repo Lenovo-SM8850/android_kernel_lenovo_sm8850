@@ -128,8 +128,6 @@ def _generate_ddk_target(
         includes = (module.includes or []) + {paths.dirname(hdr): "" for hdr in src_hdrs}.keys()
 
         extra_args = dict(module.extra_args)
-        if module.name == "drivers/ufs/host/ufs-qcom":
-            extra_args["local_defines"] = extra_args.get("local_defines", []) + ["CONFIG_LENOVO_SM8850_DEVICE_PROFILE=1"]
         ddk_module(
             name = "{}/{}".format(target_variant, module.name),
             out = module.out,
