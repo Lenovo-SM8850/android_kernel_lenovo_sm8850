@@ -6382,12 +6382,8 @@ ret:
 /* Device trees opt in to the shared Samsung UFS maintenance extensions. */
 static bool ufs_qcom_vendor_maintenance_enabled(struct device_node *np)
 {
-#ifdef CONFIG_LENOVO_SM8850_DEVICE_PROFILE
 	return np && ufs_id == UFS_VENDOR_SAMSUNG &&
 		of_property_read_bool(np, "lenovo,samsung-ufs-maintenance");
-#else
-	return ufs_id == UFS_VENDOR_SAMSUNG;
-#endif
 }
 
 /**
