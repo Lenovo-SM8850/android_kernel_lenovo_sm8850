@@ -85,6 +85,9 @@ def define_single_android_build(
             else:
                 fail("Library target {} does not match stem {}_".format(t, stem))
 
+    # Install and distribute the same external module cohort.
+    external_modules = define_techpack_modules(stem, name, variant)
+
     modules = registry.define_modules(
         stem,
         config_fragment,
@@ -93,6 +96,7 @@ def define_single_android_build(
         implicit_config_fragment,
         config_path = config_path,
         library_names = library_names,
+        extra_install_modules = external_modules,
     )
 
     hermetic_genrule(
@@ -381,6 +385,8 @@ def define_single_android_build(
         if gki_module.split("/")[-1] in msm_module_kos
     ]
 
+    dist_data.append("{}/vmlinux.symvers".format(gki_kernel_build))
+
     vendor_dlkm_module_unprotected_list = get_unprotected_vendor_modules_list(stem)
     vendor_unprotected_dlkm = " ".join(vendor_dlkm_module_unprotected_list)
     if vendor_unprotected_dlkm:
@@ -402,7 +408,6 @@ def define_single_android_build(
         if board_bc_extras:
             dist_data.append("{}_extra_bootconfig".format(stem))
 
-    dist_data.extend(define_techpack_modules(stem, name, variant))
 
     pkg_files(
         name = "{}_dist_files".format(stem),
