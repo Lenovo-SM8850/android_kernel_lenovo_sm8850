@@ -2257,6 +2257,18 @@ out:
 	return rc;
 }
 
+static ssize_t qti_charger_ro_show(const struct class *c,
+		const struct class_attribute *attr, char *buf,
+		u32 psy_type, u32 prop_id)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	struct psy_state *pst = &bcdev->psy_list[psy_type];
+	int ret = read_property_id(bcdev, pst, prop_id);
+
+	return ret < 0 ? ret : sysfs_emit(buf, "%d\n", pst->prop[prop_id]);
+}
+
 #define QTI_CHARGER_RO_SHOW(name, psy_type, prop_id)			\
 	static ssize_t name##_show(const struct class *c,			\
 					const struct class_attribute *attr,	\
