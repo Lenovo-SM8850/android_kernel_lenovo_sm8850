@@ -371,6 +371,10 @@ struct battery_chg_dev {
 	u32				last_fcc_ua;
 	u32				usb_icl_ua;
 	u32 usb2_icl_ua;
+	u32 usb_num_ports;
+	struct mutex chg_status_lock;
+	unsigned long chg_status_updated;
+	bool chg_status_valid;
 	bool usb2_enabled;
 	bool usb2_timed_out;
 	u32 usb2_request_opcode;
@@ -1948,6 +1952,12 @@ static const struct power_supply_desc batt_psy_desc = {
 	.property_is_writeable	= battery_psy_prop_is_writeable,
 };
 
+static const struct attribute_group dual_usb_reset_group;
+static const struct attribute_group *dual_usb_reset_groups[] = {
+	&dual_usb_reset_group,
+	NULL,
+};
+
 static int battery_chg_init_psy(struct battery_chg_dev *bcdev)
 {
 	struct power_supply_config psy_cfg = {};
@@ -1955,6 +1965,8 @@ static int battery_chg_init_psy(struct battery_chg_dev *bcdev)
 
 	psy_cfg.drv_data = bcdev;
 	psy_cfg.of_node = bcdev->dev->of_node;
+	if (bcdev->psy_list[PSY_TYPE_USB2].prop_count)
+		psy_cfg.attr_grp = dual_usb_reset_groups;
 	bcdev->psy_list[PSY_TYPE_USB].psy =
 		devm_power_supply_register(bcdev->dev, &usb_psy_desc, &psy_cfg);
 	if (IS_ERR(bcdev->psy_list[PSY_TYPE_USB].psy)) {
@@ -1971,6 +1983,7 @@ static int battery_chg_init_psy(struct battery_chg_dev *bcdev)
 
 		/* Confirm the ADSP port count. */
 		rc = read_property_id(bcdev, usb, DUAL_USB_USB_NUM_PORTS);
+		bcdev->usb_num_ports = rc ? 1 : usb->prop[DUAL_USB_USB_NUM_PORTS];
 		bcdev->usb2_enabled = !rc && ports == 2 &&
 			usb->prop[DUAL_USB_USB_NUM_PORTS] == ports;
 	}
@@ -2310,7 +2323,7 @@ static ssize_t wireless_fw_update_time_ms_show(const struct class *c,
 {
 	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
 						battery_class);
-	return scnprintf(buf, PAGE_SIZE, "%u\n", bcdev->wls_fw_update_time_ms);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", bcdev->wls_fw_update_time_ms);
 }
 static CLASS_ATTR_RW(wireless_fw_update_time_ms);
 
@@ -2447,7 +2460,7 @@ static ssize_t usb_num_ports_show(const struct class *c,
 	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_USB];
 	int rc = read_property_id(bcdev, pst, DUAL_USB_USB_NUM_PORTS);
 
-	return rc ? rc : scnprintf(buf, PAGE_SIZE, "%u\n", pst->prop[DUAL_USB_USB_NUM_PORTS]);
+	return rc ? rc : scnprintf(buf, PAGE_SIZE, "%d\n", pst->prop[DUAL_USB_USB_NUM_PORTS]);
 }
 static CLASS_ATTR_RO(usb_num_ports);
 
@@ -2501,7 +2514,7 @@ static ssize_t restrict_cur_show(const struct class *c, const struct class_attri
 	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
 						battery_class);
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", bcdev->restrict_fcc_ua);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", bcdev->restrict_fcc_ua);
 }
 static CLASS_ATTR_RW(restrict_cur);
 
@@ -2637,7 +2650,7 @@ static ssize_t moisture_detection_en_show(const struct class *c,
 			pst->prop[USB_MOISTURE_DET_EN]);
 }
 static CLASS_ATTR_RW(moisture_detection_en);
-static ssize_t usb_2_moisture_detection_en_store(const struct class *c,
+static ssize_t moisture_detection_usb_2_en_store(const struct class *c,
 					const struct class_attribute *attr,
 					const char *buf, size_t count)
 {
@@ -2657,7 +2670,7 @@ static ssize_t usb_2_moisture_detection_en_store(const struct class *c,
 	return count;
 }
 
-static ssize_t usb_2_moisture_detection_en_show(const struct class *c,
+static ssize_t moisture_detection_usb_2_en_show(const struct class *c,
 					const struct class_attribute *attr, char *buf)
 {
 	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
@@ -2672,7 +2685,7 @@ static ssize_t usb_2_moisture_detection_en_show(const struct class *c,
 	return scnprintf(buf, PAGE_SIZE, "%d\n",
 			pst->prop[USB_MOISTURE_DET_EN]);
 }
-static CLASS_ATTR_RW(usb_2_moisture_detection_en);
+static CLASS_ATTR_RW(moisture_detection_usb_2_en);
 
 static ssize_t moisture_detection_status_show(const struct class *c,
 					const struct class_attribute *attr, char *buf)
@@ -2690,7 +2703,7 @@ static ssize_t moisture_detection_status_show(const struct class *c,
 			pst->prop[USB_MOISTURE_DET_STS]);
 }
 static CLASS_ATTR_RO(moisture_detection_status);
-static ssize_t usb_2_moisture_detection_status_show(const struct class *c,
+static ssize_t moisture_detection_usb_2_status_show(const struct class *c,
 					const struct class_attribute *attr, char *buf)
 {
 	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
@@ -2705,7 +2718,7 @@ static ssize_t usb_2_moisture_detection_status_show(const struct class *c,
 	return scnprintf(buf, PAGE_SIZE, "%d\n",
 			pst->prop[USB_MOISTURE_DET_STS]);
 }
-static CLASS_ATTR_RO(usb_2_moisture_detection_status);
+static CLASS_ATTR_RO(moisture_detection_usb_2_status);
 
 static ssize_t resistance_show(const struct class *c,
 					const struct class_attribute *attr, char *buf)
@@ -2719,7 +2732,7 @@ static ssize_t resistance_show(const struct class *c,
 	if (rc < 0)
 		return rc;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", pst->prop[BATT_RESISTANCE]);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", pst->prop[BATT_RESISTANCE]);
 }
 static CLASS_ATTR_RO(resistance);
 
@@ -3812,11 +3825,26 @@ static struct attribute *battery_class_attrs[] = {
 };
 ATTRIBUTE_GROUPS(battery_class);
 
+QTI_CHARGER_RO_SHOW(fg1_fw_version, PSY_TYPE_HQ, 58);
+QTI_CHARGER_RO_SHOW(fg2_fw_version, PSY_TYPE_HQ, 59);
+QTI_CHARGER_RO_SHOW(fg1_charge_full, PSY_TYPE_HQ, 63);
+QTI_CHARGER_RO_SHOW(fg2_charge_full, PSY_TYPE_HQ, 64);
+QTI_CHARGER_RO_SHOW(fg1_charge_full_design, PSY_TYPE_HQ, 65);
+QTI_CHARGER_RO_SHOW(fg2_charge_full_design, PSY_TYPE_HQ, 66);
+QTI_CHARGER_RO_SHOW(fg1_charge_counter, PSY_TYPE_HQ, 67);
+QTI_CHARGER_RO_SHOW(fg2_charge_counter, PSY_TYPE_HQ, 68);
+QTI_CHARGER_RO_SHOW(usb_2_typec_compliant, PSY_TYPE_USB2, USB_TYPEC_COMPLIANT);
+
 static struct attribute *dual_usb_battery_class_attrs[] = {
-	&class_attr_usb_2_real_type.attr,
 	&class_attr_usb_num_ports.attr,
-	&class_attr_usb_2_moisture_detection_status.attr,
-	&class_attr_usb_2_moisture_detection_en.attr,
+	&class_attr_fg1_fw_version.attr,
+	&class_attr_fg2_fw_version.attr,
+	&class_attr_fg1_charge_full.attr,
+	&class_attr_fg2_charge_full.attr,
+	&class_attr_fg1_charge_full_design.attr,
+	&class_attr_fg2_charge_full_design.attr,
+	&class_attr_fg1_charge_counter.attr,
+	&class_attr_fg2_charge_counter.attr,
 	NULL,
 };
 static const struct attribute_group dual_usb_battery_class_group = {
@@ -3827,6 +3855,35 @@ static const struct attribute_group *dual_usb_class_groups[] = {
 	&dual_usb_battery_class_group,
 	NULL,
 };
+
+static struct attribute *dual_usb_two_port_class_attrs[] = {
+	&class_attr_soh.attr,
+	&class_attr_resistance.attr,
+	&class_attr_moisture_detection_status.attr,
+	&class_attr_moisture_detection_en.attr,
+	&class_attr_wireless_boost_en.attr,
+	&class_attr_fake_soc.attr,
+	&class_attr_wireless_fw_update.attr,
+	&class_attr_wireless_fw_force_update.attr,
+	&class_attr_wireless_fw_version.attr,
+	&class_attr_wireless_fw_crc.attr,
+	&class_attr_wireless_fw_update_time_ms.attr,
+	&class_attr_wireless_type.attr,
+	&class_attr_ship_mode_en.attr,
+	&class_attr_restrict_chg.attr,
+	&class_attr_restrict_cur.attr,
+	&class_attr_usb_real_type.attr,
+	&class_attr_usb_typec_compliant.attr,
+	&class_attr_charge_control_en.attr,
+	&class_attr_battery_parallel_cell_count.attr,
+	&class_attr_usb_num_ports.attr,
+	&class_attr_usb_2_real_type.attr,
+	&class_attr_usb_2_typec_compliant.attr,
+	&class_attr_moisture_detection_usb_2_status.attr,
+	&class_attr_moisture_detection_usb_2_en.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(dual_usb_two_port_class);
 
 
 static struct attribute *battery_class_pmw6100_attrs[] = {
@@ -4438,15 +4495,107 @@ static int lenovo_battery_sysfs_create_group(struct battery_chg_dev *bcdev)
 	return rc;
 }
 
+static ssize_t fg_fw_version_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = power_supply_get_drvdata(dev_get_drvdata(dev));
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_HQ];
+	u32 value = 0;
+
+	if (!read_property_id(bcdev, pst, 58))
+		value = pst->prop[58];
+	return sysfs_emit(buf, "%04X\n", value);
+}
+static DEVICE_ATTR(fg_fw_version, 0664, fg_fw_version_show, NULL);
+
+static ssize_t chg_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = power_supply_get_drvdata(dev_get_drvdata(dev));
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_HQ];
+	u32 value = 0;
+
+	mutex_lock(&bcdev->chg_status_lock);
+	if (bcdev->chg_status_valid &&
+	    time_before_eq(jiffies, bcdev->chg_status_updated + 13)) {
+		value = pst->prop[60];
+	} else if (!read_property_id(bcdev, pst, 60)) {
+		value = pst->prop[60];
+		bcdev->chg_status_updated = jiffies;
+		bcdev->chg_status_valid = true;
+	}
+	mutex_unlock(&bcdev->chg_status_lock);
+	return sysfs_emit(buf, "%d\n", value);
+}
+static DEVICE_ATTR(chg_status, 0664, chg_status_show, NULL);
+
+static struct attribute *dual_usb_battery_psy_attrs[] = {
+	&dev_attr_fg_fw_version.attr,
+	&dev_attr_chg_status.attr,
+	NULL,
+};
+static const struct attribute_group dual_usb_battery_psy_group = {
+	.attrs = dual_usb_battery_psy_attrs,
+};
+
+static int dual_usb_battery_sysfs_create_group(struct battery_chg_dev *bcdev)
+{
+	struct kobject *kobj = &bcdev->psy_list[PSY_TYPE_BATTERY].psy->dev.kobj;
+	int ret = lenovo_battery_sysfs_create_group(bcdev);
+
+	if (ret)
+		return ret;
+	ret = sysfs_create_group(kobj, &dual_usb_battery_psy_group);
+	if (ret)
+		sysfs_remove_group(kobj, &battery_sysfs_attr_group);
+	return ret;
+}
+
+static ssize_t charge_adapter_power_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = power_supply_get_drvdata(dev_get_drvdata(dev));
+	struct psy_state *hq = &bcdev->psy_list[PSY_TYPE_HQ];
+	struct psy_state *usb = &bcdev->psy_list[PSY_TYPE_USB];
+	u32 power, voltage;
+	int ret;
+
+	ret = read_property_id(bcdev, hq, 61);
+	if (ret)
+		return ret;
+	power = hq->prop[61];
+	ret = read_property_id(bcdev, usb, USB_VOLT_NOW);
+	if (ret)
+		return ret;
+	voltage = usb->prop[USB_VOLT_NOW];
+	ret = read_property_id(bcdev, hq, HQ_POWER_SUPPLY_PROP_IBUS_TOTAL);
+	if (ret)
+		return ret;
+	return sysfs_emit(buf, "%d,%d,%d\n", power / 1000, voltage / 1000,
+			 hq->prop[HQ_POWER_SUPPLY_PROP_IBUS_TOTAL]);
+}
+static DEVICE_ATTR_RO(charge_adapter_power);
+
+static ssize_t charge_adapter_type_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = power_supply_get_drvdata(dev_get_drvdata(dev));
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_HQ];
+	int ret = read_property_id(bcdev, pst, 62);
+
+	return ret ? ret : sysfs_emit(buf, "%x\n", pst->prop[62]);
+}
+static DEVICE_ATTR_RO(charge_adapter_type);
+
 static ssize_t usb_otg_reset_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct battery_chg_dev *bcdev = power_supply_get_drvdata(dev_get_drvdata(dev));
-	u32 value;
-	int rc = kstrtou32(buf, 0, &value);
+	int value;
+	int rc = kstrtoint(buf, 0, &value);
 
 	if (rc)
-		return rc;
+		return -EINVAL;
 	rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_HQ],
 			DUAL_USB_USB_OTG_RESET, value);
 	return rc ? rc : count;
@@ -4550,8 +4699,17 @@ static void devices_get_informs_work(struct work_struct *work)
 
 
 
-static struct attribute *dual_usb_usb_psy_attrs[] = {
+static struct attribute *dual_usb_reset_attrs[] = {
 	&dev_attr_usb_otg_reset.attr,
+	NULL,
+};
+static const struct attribute_group dual_usb_reset_group = {
+	.attrs = dual_usb_reset_attrs,
+};
+
+static struct attribute *dual_usb_usb_psy_attrs[] = {
+	&dev_attr_charge_adapter_power.attr,
+	&dev_attr_charge_adapter_type.attr,
 	NULL,
 };
 static const struct attribute_group dual_usb_usb_psy_group = {
@@ -4622,7 +4780,7 @@ static const struct battery_chg_protocol lenovo_dual_usb_v1 = {
 		},
 	},
 	.class_groups = dual_usb_class_groups,
-	.create_battery_group = lenovo_battery_sysfs_create_group,
+	.create_battery_group = dual_usb_battery_sysfs_create_group,
 	.create_usb_group = dual_usb_usb_sysfs_create_group,
 	.dual_port = true,
 };
@@ -4662,6 +4820,7 @@ static int battery_chg_probe(struct platform_device *pdev)
 
 	bcdev->lenovo_chg_monitor_started = false;
 	mutex_init(&bcdev->rw_lock);
+	mutex_init(&bcdev->chg_status_lock);
 	init_rwsem(&bcdev->state_sem);
 	init_completion(&bcdev->ack);
 	init_completion(&bcdev->fw_buf_ack);
@@ -4739,6 +4898,8 @@ static int battery_chg_probe(struct platform_device *pdev)
 
 	bcdev->battery_class.name = "qcom-battery";
 	bcdev->battery_class.class_groups = protocol->class_groups;
+	if (bcdev->psy_list[PSY_TYPE_USB2].prop_count && bcdev->usb_num_ports == 2)
+		bcdev->battery_class.class_groups = dual_usb_two_port_class_groups;
 	rc = class_register(&bcdev->battery_class);
 	if (rc < 0) {
 		dev_err(dev, "Failed to create battery_class rc=%d\n", rc);
