@@ -62,6 +62,8 @@
 /* Generic definitions */
 #define MAX_STR_LEN			128
 #define BC_WAIT_TIME_MS			1000
+#define BC_PROBE_MIN_MS			2000
+#define BC_PROBE_MAX_MS			60000
 #define BC_FW_VER_WAIT_TIME_MS		1500
 #define WLS_FW_PREPARE_TIME_MS		1000
 #define WLS_FW_WAIT_TIME_MS		500
@@ -319,6 +321,13 @@ struct psy_state {
 	u32			prop_count;
 	u32			opcode_get;
 	u32			opcode_set;
+	bool			isolate;
+	bool			timed_out;
+	u32			req_opcode;
+	u32			req_property;
+	bool			probe_pending;
+	u32			probe_property;
+	unsigned long		probe_jiffies;
 };
 
 
@@ -376,10 +385,9 @@ struct battery_chg_dev {
 	unsigned long chg_status_updated;
 	bool chg_status_valid;
 	bool usb2_enabled;
-	bool usb2_timed_out;
-	u32 usb2_request_opcode;
-	u32 usb2_request_property;
-	struct work_struct usb2_retry_work;
+	struct delayed_work bank_probe_work;
+	u32 probe_backoff_ms;
+	unsigned long last_probe_jiffies;
 	u32				thermal_fcc_step;
 	bool				restrict_chg_en;
 	u8				chg_ctrl_start_thr;
@@ -531,18 +539,63 @@ static int battery_chg_fw_write(struct battery_chg_dev *bcdev, void *data,
 	return rc;
 }
 
+static int isolated_bank_index(struct battery_chg_dev *bcdev, u32 opcode)
+{
+	int i;
+
+	for (i = 0; i < PSY_TYPE_MAX; i++) {
+		struct psy_state *pst = &bcdev->psy_list[i];
+
+		if (!pst->isolate || (i == PSY_TYPE_USB2 && !pst->prop_count))
+			continue;
+		if (opcode == pst->opcode_get || opcode == pst->opcode_set)
+			return i;
+	}
+	return -1;
+}
+
+static bool isolated_bank_timed_out(struct battery_chg_dev *bcdev)
+{
+	int i;
+
+	for (i = 0; i < PSY_TYPE_MAX; i++) {
+		struct psy_state *pst = &bcdev->psy_list[i];
+
+		if (pst->isolate && READ_ONCE(pst->timed_out) &&
+		    (i != PSY_TYPE_USB2 || bcdev->usb2_enabled))
+			return true;
+	}
+	return false;
+}
+
+static void kick_bank_probe(struct battery_chg_dev *bcdev, u32 delay_ms)
+{
+	down_read(&bcdev->state_sem);
+	if (bcdev->initialized && isolated_bank_timed_out(bcdev) &&
+	    (delay_ms || time_after_eq(jiffies,
+		READ_ONCE(bcdev->last_probe_jiffies) +
+		msecs_to_jiffies(BC_PROBE_MIN_MS)))) {
+		mod_delayed_work(system_wq, &bcdev->bank_probe_work,
+				 msecs_to_jiffies(delay_ms));
+	}
+	up_read(&bcdev->state_sem);
+}
+
 static int battery_chg_write(struct battery_chg_dev *bcdev, void *data,
 				int len, u32 wait_time)
 {
-	int rc;
 	struct pmic_glink_hdr *hdr = data;
+	struct battery_charger_req_msg *req = data;
+	int bank = isolated_bank_index(bcdev, hdr->opcode);
+	struct psy_state *pst = bank < 0 ? NULL : &bcdev->psy_list[bank];
 	bool usb2 = bcdev->psy_list[PSY_TYPE_USB2].prop_count &&
 		    (hdr->opcode == BC_USB2_STATUS_GET ||
 		     hdr->opcode == BC_USB2_STATUS_SET);
+	int rc;
 
 	/* Suppressed callers must not queue behind a recovery transaction. */
-	if (usb2 && (!bcdev->usb2_enabled ||
-		     READ_ONCE(bcdev->usb2_timed_out)))
+	if ((usb2 && !bcdev->usb2_enabled) ||
+	    (pst && READ_ONCE(pst->timed_out)))
 		return -ENODATA;
 
 	/*
@@ -564,15 +617,15 @@ static int battery_chg_write(struct battery_chg_dev *bcdev, void *data,
 
 	mutex_lock(&bcdev->rw_lock);
 	/* Another reader may have timed out while we waited for the lock. */
-	if (usb2 && READ_ONCE(bcdev->usb2_timed_out)) {
-		mutex_unlock(&bcdev->rw_lock);
-		return -ENODATA;
+	if (pst && READ_ONCE(pst->timed_out)) {
+		rc = -ENODATA;
+		goto out;
 	}
-	if (usb2) {
-		struct battery_charger_req_msg *req = data;
-
-		WRITE_ONCE(bcdev->usb2_request_property, req->property_id);
-		WRITE_ONCE(bcdev->usb2_request_opcode, hdr->opcode);
+	if (pst) {
+		if (len == sizeof(*req))
+			WRITE_ONCE(pst->req_property, req->property_id);
+		/* Publish the property before the active opcode. */
+		smp_store_release(&pst->req_opcode, hdr->opcode);
 	}
 	reinit_completion(&bcdev->ack);
 	bcdev->error_prop = false;
@@ -581,13 +634,29 @@ static int battery_chg_write(struct battery_chg_dev *bcdev, void *data,
 		rc = wait_for_completion_timeout(&bcdev->ack,
 					msecs_to_jiffies(wait_time));
 		if (!rc) {
-			if (usb2) {
-				WRITE_ONCE(bcdev->usb2_request_opcode, 0);
-				WRITE_ONCE(bcdev->usb2_timed_out, true);
+			if (pst) {
+				WRITE_ONCE(pst->req_opcode, 0);
+				WRITE_ONCE(pst->probe_property, len == sizeof(*req) ?
+					   READ_ONCE(pst->req_property) : pst->prop_count);
+				WRITE_ONCE(pst->probe_pending, false);
+				WRITE_ONCE(pst->timed_out, true);
+				if (pst->psy)
+					pr_err_ratelimited("Bank %s isolated: opcode %#x prop_id %u\n",
+						pst->psy->desc->name, hdr->opcode,
+						READ_ONCE(pst->req_property));
+				else
+					pr_err_ratelimited("Bank %d isolated: opcode %#x prop_id %u\n",
+						bank, hdr->opcode, READ_ONCE(pst->req_property));
+				kick_bank_probe(bcdev, READ_ONCE(bcdev->probe_backoff_ms));
 			}
-			pr_err("Error, timed out sending message\n");
-			mutex_unlock(&bcdev->rw_lock);
-			return -ETIMEDOUT;
+			if (len == sizeof(*req))
+				pr_err("Error, timed out sending message opcode %#x prop_id %u\n",
+					hdr->opcode, req->property_id);
+			else
+				pr_err("Error, timed out sending message opcode %#x\n",
+					hdr->opcode);
+			rc = -ETIMEDOUT;
+			goto out;
 		}
 		rc = 0;
 
@@ -602,24 +671,28 @@ static int battery_chg_write(struct battery_chg_dev *bcdev, void *data,
 		if (bcdev->error_prop) {
 			bcdev->error_prop = false;
 			rc = -ENODATA;
+		} else if (pst) {
+			WRITE_ONCE(bcdev->probe_backoff_ms, BC_PROBE_MIN_MS);
 		}
 	}
-	if (usb2)
-		WRITE_ONCE(bcdev->usb2_request_opcode, 0);
+out:
+	if (pst)
+		WRITE_ONCE(pst->req_opcode, 0);
 	mutex_unlock(&bcdev->rw_lock);
 
 	return rc;
 }
 
 /* A recovery probe never waits for a reply while holding the shared lock. */
-static void dual_usb_usb2_retry_work(struct work_struct *work)
+static void battery_chg_bank_probe_work(struct work_struct *work)
 {
-	struct battery_chg_dev *bcdev = container_of(work,
-				struct battery_chg_dev, usb2_retry_work);
+	struct battery_chg_dev *bcdev = container_of(to_delayed_work(work),
+				struct battery_chg_dev, bank_probe_work);
 	struct battery_charger_req_msg req_msg = { { 0 } };
+	bool probe_sent = false;
+	u32 backoff_ms;
+	int i;
 
-	if (!bcdev->usb2_enabled || !READ_ONCE(bcdev->usb2_timed_out))
-		return;
 	down_read(&bcdev->state_sem);
 	if (!bcdev->initialized ||
 	    atomic_read(&bcdev->state) == PMIC_GLINK_STATE_DOWN) {
@@ -629,14 +702,54 @@ static void dual_usb_usb2_retry_work(struct work_struct *work)
 	up_read(&bcdev->state_sem);
 	if (bcdev->debug_battery_detected && bcdev->block_tx)
 		return;
-	if (!mutex_trylock(&bcdev->rw_lock))
-		return;
-	req_msg.hdr.owner = MSG_OWNER_BC;
-	req_msg.hdr.type = MSG_TYPE_REQ_RESP;
-	req_msg.hdr.opcode = BC_USB2_STATUS_GET;
-	req_msg.property_id = USB_ADAP_TYPE;
-	pmic_glink_write(bcdev->client, &req_msg, sizeof(req_msg));
-	mutex_unlock(&bcdev->rw_lock);
+	/* A kick may have queued while the previous probe was being sent. */
+	if (time_before(jiffies, READ_ONCE(bcdev->last_probe_jiffies) +
+			msecs_to_jiffies(BC_PROBE_MIN_MS)))
+		goto rearm;
+
+	for (i = 0; i < PSY_TYPE_MAX; i++) {
+		struct psy_state *pst = &bcdev->psy_list[i];
+
+		if (!pst->isolate || !READ_ONCE(pst->timed_out) ||
+		    (i == PSY_TYPE_USB2 && !bcdev->usb2_enabled))
+			continue;
+		if (!mutex_trylock(&bcdev->rw_lock))
+			break;
+		if (!READ_ONCE(pst->timed_out)) {
+			mutex_unlock(&bcdev->rw_lock);
+			continue;
+		}
+		req_msg.hdr.owner = MSG_OWNER_BC;
+		req_msg.hdr.type = MSG_TYPE_REQ_RESP;
+		req_msg.hdr.opcode = pst->opcode_get;
+		req_msg.property_id = READ_ONCE(pst->probe_property);
+		if (req_msg.property_id >= pst->prop_count)
+			req_msg.property_id = i == PSY_TYPE_WLS ?
+					      WLS_ADAP_TYPE : USB_ADAP_TYPE;
+		WRITE_ONCE(pst->probe_property, req_msg.property_id);
+		WRITE_ONCE(pst->probe_jiffies, jiffies);
+		WRITE_ONCE(pst->probe_pending, true);
+		WRITE_ONCE(bcdev->last_probe_jiffies, jiffies);
+		/* Consume one backoff step per probe round. */
+		if (!probe_sent) {
+			backoff_ms = READ_ONCE(bcdev->probe_backoff_ms);
+			WRITE_ONCE(bcdev->probe_backoff_ms,
+				   min(backoff_ms * 2, (u32)BC_PROBE_MAX_MS));
+		}
+		probe_sent = true;
+		pmic_glink_write(bcdev->client, &req_msg, sizeof(req_msg));
+		mutex_unlock(&bcdev->rw_lock);
+	}
+
+rearm:
+	down_read(&bcdev->state_sem);
+	if (bcdev->initialized && isolated_bank_timed_out(bcdev)) {
+		backoff_ms = READ_ONCE(bcdev->probe_backoff_ms);
+		/* Preserve an immediate notification kick already queued. */
+		queue_delayed_work(system_wq, &bcdev->bank_probe_work,
+				   msecs_to_jiffies(backoff_ms));
+	}
+	up_read(&bcdev->state_sem);
 }
 
 static int write_property_id(struct battery_chg_dev *bcdev,
@@ -837,26 +950,41 @@ static void handle_message(struct battery_chg_dev *bcdev, void *data,
 	struct wireless_fw_get_version_resp *fw_ver_msg;
 	struct psy_state *pst;
 	bool ack_set = false;
-	bool usb2 = bcdev->psy_list[PSY_TYPE_USB2].prop_count &&
-		    (resp_msg->hdr.opcode == BC_USB2_STATUS_GET ||
-		     resp_msg->hdr.opcode == BC_USB2_STATUS_SET);
+	int bank = isolated_bank_index(bcdev, resp_msg->hdr.opcode);
 
-	/* Late/probe replies may refresh USB2, but must not ACK another bank. */
-	if (usb2 && (READ_ONCE(bcdev->usb2_request_opcode) != resp_msg->hdr.opcode ||
-		     (resp_msg->hdr.opcode == BC_USB2_STATUS_GET &&
-		      len == sizeof(*resp_msg) &&
-		      READ_ONCE(bcdev->usb2_request_property) != resp_msg->property_id))) {
-		pst = &bcdev->psy_list[PSY_TYPE_USB2];
-		if (bcdev->usb2_enabled && len == sizeof(*resp_msg) &&
-		    !resp_msg->ret_code && resp_msg->property_id < pst->prop_count) {
-			if (resp_msg->hdr.opcode == BC_USB2_STATUS_GET)
-				pst->prop[resp_msg->property_id] = resp_msg->value;
-			if (READ_ONCE(bcdev->usb2_timed_out)) {
-				WRITE_ONCE(bcdev->usb2_timed_out, false);
-				schedule_work(&bcdev->usb_type_work);
+	if (bank == PSY_TYPE_USB2 && !bcdev->usb2_enabled)
+		goto unknown_opcode;
+
+	/* Late replies must not change the shared error or ACK another bank. */
+	if (bank >= 0) {
+		pst = &bcdev->psy_list[bank];
+		/* Acquire the property published with the active opcode. */
+		if (smp_load_acquire(&pst->req_opcode) != resp_msg->hdr.opcode ||
+		    (resp_msg->hdr.opcode == pst->opcode_get &&
+		     len == sizeof(*resp_msg) &&
+		     READ_ONCE(pst->req_property) != resp_msg->property_id)) {
+			if (len == sizeof(*resp_msg) &&
+			    resp_msg->hdr.opcode == pst->opcode_get &&
+			    resp_msg->property_id < pst->prop_count) {
+				if (!resp_msg->ret_code)
+					pst->prop[resp_msg->property_id] = resp_msg->value;
+				if (READ_ONCE(pst->timed_out) &&
+				    READ_ONCE(pst->probe_pending) &&
+				    resp_msg->property_id == READ_ONCE(pst->probe_property) &&
+				    time_before_eq(jiffies, READ_ONCE(pst->probe_jiffies) +
+						msecs_to_jiffies(BC_WAIT_TIME_MS))) {
+					WRITE_ONCE(pst->probe_pending, false);
+					WRITE_ONCE(pst->timed_out, false);
+					if (pst->psy)
+						pr_info_ratelimited("Bank %s recovered\n",
+							pst->psy->desc->name);
+					else
+						pr_info_ratelimited("Bank %d recovered\n", bank);
+					schedule_work(&bcdev->usb_type_work);
+				}
 			}
+			return;
 		}
-		return;
 	}
 
 	switch (resp_msg->hdr.opcode) {
@@ -891,8 +1019,6 @@ usb_response:
 		if (validate_message(bcdev, resp_msg, len) &&
 		    resp_msg->property_id < pst->prop_count) {
 			pst->prop[resp_msg->property_id] = resp_msg->value;
-			if (pst == &bcdev->psy_list[PSY_TYPE_USB2])
-				WRITE_ONCE(bcdev->usb2_timed_out, false);
 			ack_set = true;
 		}
 
@@ -926,10 +1052,8 @@ usb_response:
 	case BC_USB2_STATUS_SET:
 		if (!bcdev->usb2_enabled)
 			goto unknown_opcode;
-		if (bcdev->usb2_enabled && validate_message(bcdev, data, len)) {
-			WRITE_ONCE(bcdev->usb2_timed_out, false);
+		if (bcdev->usb2_enabled && validate_message(bcdev, data, len))
 			ack_set = true;
-		}
 		break;
 	case BC_SET_NOTIFY_REQ:
 	case BC_DISABLE_NOTIFY_REQ:
@@ -1032,6 +1156,8 @@ static void battery_chg_update_usb_type_work(struct work_struct *work)
 	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_USB];
 	struct psy_state *pst_wls = &bcdev->psy_list[PSY_TYPE_WLS];
 	struct psy_state *pst_battery = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	u32 wls_type = 0;
+	bool wls_read_ok;
 	int rc;
 
 	if (bcdev->psy_list[PSY_TYPE_USB2].psy) {
@@ -1068,10 +1194,11 @@ static void battery_chg_update_usb_type_work(struct work_struct *work)
 	}
 
 	rc = read_property_id(bcdev, pst_wls, WLS_ADAP_TYPE);
-	if (rc < 0) {
-		pr_err("Failed to read WLS_ADAP_TYPE rc=%d\n", rc);
-		return;
-	}
+	wls_read_ok = rc >= 0;
+	if (!wls_read_ok)
+		pr_err_ratelimited("Failed to read WLS_ADAP_TYPE rc=%d\n", rc);
+	else
+		wls_type = pst_wls->prop[WLS_ADAP_TYPE];
 
 	/* The TB323 work refreshes the cached real type and both port voltages. */
 	rc = read_property_id(bcdev, pst, USB_REAL_TYPE);
@@ -1080,20 +1207,22 @@ static void battery_chg_update_usb_type_work(struct work_struct *work)
 	rc = read_property_id(bcdev, pst, USB_VOLT_NOW);
 	if (rc < 0)
 		pr_err("Failed to read USB_VOLT_NOW rc=%d\n", rc);
-	rc = read_property_id(bcdev, pst_wls, WLS_VOLT_NOW);
-	if (rc < 0)
-		pr_err("Failed to read WLS_VOLT_NOW rc=%d\n", rc);
-	if ((pst->prop[USB_ADAP_TYPE] || pst_wls->prop[WLS_ADAP_TYPE]) &&
+	if (wls_read_ok) {
+		rc = read_property_id(bcdev, pst_wls, WLS_VOLT_NOW);
+		if (rc < 0)
+			pr_err("Failed to read WLS_VOLT_NOW rc=%d\n", rc);
+	}
+	if ((pst->prop[USB_ADAP_TYPE] || wls_type) &&
 	    pst_battery->prop[BATT_STATUS] != POWER_SUPPLY_STATUS_FULL &&
 	    (pst_battery->prop[BATT_STATUS] != POWER_SUPPLY_STATUS_NOT_CHARGING || is_offmode())) {
 		if (!bcdev->charge_wakelock->active) {
 			pr_info("hold wakelock!!! usb_type:[%d,%d], status:%d\n ",
-				pst->prop[USB_ADAP_TYPE], pst_wls->prop[WLS_ADAP_TYPE], pst_battery->prop[BATT_STATUS]);
+				pst->prop[USB_ADAP_TYPE], wls_type, pst_battery->prop[BATT_STATUS]);
 			__pm_stay_awake(bcdev->charge_wakelock);
 		}
-	} else if (bcdev->charge_wakelock->active) {
+	} else if (wls_read_ok && bcdev->charge_wakelock->active) {
 		pr_info("release wakelock!!! usb_type:[%d,%d], status:%d\n ",
-			pst->prop[USB_ADAP_TYPE], pst_wls->prop[WLS_ADAP_TYPE], pst_battery->prop[BATT_STATUS]);
+			pst->prop[USB_ADAP_TYPE], wls_type, pst_battery->prop[BATT_STATUS]);
 		__pm_relax(bcdev->charge_wakelock);
 	}
 
@@ -1142,34 +1271,36 @@ static void battery_chg_update_usb_type_work(struct work_struct *work)
 	}
 
 
-	switch (pst_wls->prop[WLS_ADAP_TYPE]) {
-	case POWER_SUPPLY_USB_TYPE_SDP:
-		wls_psy_desc.type = POWER_SUPPLY_TYPE_USB;
-		break;
-	case POWER_SUPPLY_USB_TYPE_DCP:
-	case POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID:
-	case QTI_POWER_SUPPLY_USB_TYPE_HVDCP:
-	case QTI_POWER_SUPPLY_USB_TYPE_HVDCP_3:
-	case QTI_POWER_SUPPLY_USB_TYPE_HVDCP_3P5:
-		wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_DCP;
-		break;
-	case POWER_SUPPLY_USB_TYPE_CDP:
-		wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_CDP;
-		break;
-	case POWER_SUPPLY_USB_TYPE_ACA:
-		wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_ACA;
-		break;
-	case POWER_SUPPLY_USB_TYPE_C:
-		wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_TYPE_C;
-		break;
-	case POWER_SUPPLY_USB_TYPE_PD:
-	case POWER_SUPPLY_USB_TYPE_PD_DRP:
-	case POWER_SUPPLY_USB_TYPE_PD_PPS:
-		wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_PD;
-		break;
-	default:
-		wls_psy_desc.type = POWER_SUPPLY_TYPE_USB;
-		break;
+	if (wls_read_ok) {
+		switch (wls_type) {
+		case POWER_SUPPLY_USB_TYPE_SDP:
+			wls_psy_desc.type = POWER_SUPPLY_TYPE_USB;
+			break;
+		case POWER_SUPPLY_USB_TYPE_DCP:
+		case POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID:
+		case QTI_POWER_SUPPLY_USB_TYPE_HVDCP:
+		case QTI_POWER_SUPPLY_USB_TYPE_HVDCP_3:
+		case QTI_POWER_SUPPLY_USB_TYPE_HVDCP_3P5:
+			wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_DCP;
+			break;
+		case POWER_SUPPLY_USB_TYPE_CDP:
+			wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_CDP;
+			break;
+		case POWER_SUPPLY_USB_TYPE_ACA:
+			wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_ACA;
+			break;
+		case POWER_SUPPLY_USB_TYPE_C:
+			wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_TYPE_C;
+			break;
+		case POWER_SUPPLY_USB_TYPE_PD:
+		case POWER_SUPPLY_USB_TYPE_PD_DRP:
+		case POWER_SUPPLY_USB_TYPE_PD_PPS:
+			wls_psy_desc.type = POWER_SUPPLY_TYPE_USB_PD;
+			break;
+		default:
+			wls_psy_desc.type = POWER_SUPPLY_TYPE_USB;
+			break;
+		}
 	}
 	if (!bcdev->lenovo_chg_monitor_started)
 		mod_delayed_work(system_wq, &bcdev->lenovo_chg_monitor_work, 0);
@@ -1294,9 +1425,7 @@ static void handle_notification(struct battery_chg_dev *bcdev, void *data,
 		if (!bcdev->usb2_enabled)
 			break;
 		pst = &bcdev->psy_list[PSY_TYPE_USB2];
-		if (READ_ONCE(bcdev->usb2_timed_out))
-			schedule_work(&bcdev->usb2_retry_work);
-		else
+		if (!READ_ONCE(pst->timed_out))
 			schedule_work(&bcdev->usb_type_work);
 		break;
 	case BC_WLS_STATUS_GET:
@@ -1309,6 +1438,16 @@ static void handle_notification(struct battery_chg_dev *bcdev, void *data,
 	case BC_BATT_ABNORMAL_NOTIFY:
 		bcdev->battery_abnormal = true;
 		schedule_work(&bcdev->battery_check_work);
+		break;
+	default:
+		break;
+	}
+
+	switch (notification) {
+	case BC_USB_STATUS_GET:
+	case BC_USB2_STATUS_GET:
+	case BC_WLS_STATUS_GET:
+		kick_bank_probe(bcdev, 0);
 		break;
 	default:
 		break;
@@ -2055,6 +2194,7 @@ static void battery_chg_subsys_up_work(struct work_struct *work)
 	if (bcdev->usb2_icl_ua)
 		dual_usb_usb2_set_icl(bcdev, USB_INPUT_CURR_LIMIT, bcdev->usb2_icl_ua);
 
+	kick_bank_probe(bcdev, 0);
 }
 
 static int wireless_fw_send_firmware(struct battery_chg_dev *bcdev,
@@ -4754,6 +4894,7 @@ static const struct battery_chg_protocol lenovo_dual_bank_v1 = {
 		[PSY_TYPE_WLS] = {
 			.map = wls_prop_map, .prop_count = WLS_PROP_MAX,
 			.opcode_get = BC_WLS_STATUS_GET, .opcode_set = BC_WLS_STATUS_SET,
+			.isolate = true,
 		},
 		[PSY_TYPE_HQ] = {
 			.map = hq_prop_map, .prop_count = HQ_POWER_SUPPLY_PROPERTIES_MAX,
@@ -4780,10 +4921,12 @@ static const struct battery_chg_protocol lenovo_dual_usb_v1 = {
 		[PSY_TYPE_USB2] = {
 			.map = dual_usb_usb_prop_map, .prop_count = 17,
 			.opcode_get = BC_USB2_STATUS_GET, .opcode_set = BC_USB2_STATUS_SET,
+			.isolate = true,
 		},
 		[PSY_TYPE_WLS] = {
 			.map = wls_prop_map, .prop_count = WLS_PROP_MAX,
 			.opcode_get = BC_WLS_STATUS_GET, .opcode_set = BC_WLS_STATUS_SET,
+			.isolate = true,
 		},
 		[PSY_TYPE_HQ] = {
 			.map = dual_usb_hq_prop_map, .prop_count = 70,
@@ -4854,7 +4997,9 @@ static int battery_chg_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&bcdev->lenovo_chg_monitor_work, lenovo_chg_monitor_work);
 	INIT_WORK(&bcdev->subsys_up_work, battery_chg_subsys_up_work);
 	INIT_WORK(&bcdev->usb_type_work, battery_chg_update_usb_type_work);
-	INIT_WORK(&bcdev->usb2_retry_work, dual_usb_usb2_retry_work);
+	INIT_DEFERRABLE_WORK(&bcdev->bank_probe_work, battery_chg_bank_probe_work);
+	bcdev->probe_backoff_ms = BC_PROBE_MIN_MS;
+	bcdev->last_probe_jiffies = jiffies - msecs_to_jiffies(BC_PROBE_MIN_MS);
 	INIT_WORK(&bcdev->battery_check_work, battery_chg_check_status_work);
 	INIT_DELAYED_WORK(&bcdev->devices_get_informs_work, devices_get_informs_work);
 	bcdev->charge_wakelock = wakeup_source_register(dev, "charge_wakelock");
@@ -4969,7 +5114,7 @@ error:
 	bcdev->initialized = false;
 	up_write(&bcdev->state_sem);
 
-	cancel_work_sync(&bcdev->usb2_retry_work);
+	cancel_delayed_work_sync(&bcdev->bank_probe_work);
 	cancel_work_sync(&bcdev->usb_type_work);
 	cancel_work_sync(&bcdev->subsys_up_work);
 	cancel_work_sync(&bcdev->battery_check_work);
@@ -5002,7 +5147,7 @@ static void battery_chg_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(bcdev->debugfs_dir);
 	class_unregister(&bcdev->battery_class);
 	cancel_work_sync(&bcdev->subsys_up_work);
-	cancel_work_sync(&bcdev->usb2_retry_work);
+	cancel_delayed_work_sync(&bcdev->bank_probe_work);
 	cancel_work_sync(&bcdev->usb_type_work);
 	cancel_work_sync(&bcdev->battery_check_work);
 	cancel_delayed_work_sync(&bcdev->lenovo_chg_monitor_work);
