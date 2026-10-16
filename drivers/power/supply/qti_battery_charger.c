@@ -4563,12 +4563,14 @@ static ssize_t lenovo_battery_sysfs_store(struct device *dev, struct device_attr
 
 	psy = dev_get_drvdata(dev);
 	if (!psy) {
-		dev_info(&psy->dev, "invalid battery psy");
-		return ret;
+		dev_err(dev, "invalid battery psy\n");
+		return -ENODEV;
 	}
 
 	sysfs_attr = container_of(attr, struct sysfs_info, attr);
-	lenovo_battery_sysfs_set_property(psy, sysfs_attr->prop, &pval);
+	ret = lenovo_battery_sysfs_set_property(psy, sysfs_attr->prop, &pval);
+	if (ret < 0)
+		return ret;
 
 	return count;
 }
@@ -4579,14 +4581,17 @@ static ssize_t lenovo_battery_sysfs_show(struct device *dev, struct device_attri
 	struct sysfs_info *sysfs_attr;
 	union power_supply_propval pval = {0};
 	ssize_t count = 0;
+	int rc;
 
 	if (!psy) {
-		dev_info(&psy->dev, "invalid battery psy");
-		return count;
+		dev_err(dev, "invalid battery psy\n");
+		return -ENODEV;
 	}
 
 	sysfs_attr = container_of(attr, struct sysfs_info, attr);
-	lenovo_battery_sysfs_get_property(psy, sysfs_attr->prop, &pval);
+	rc = lenovo_battery_sysfs_get_property(psy, sysfs_attr->prop, &pval);
+	if (rc < 0)
+		return rc;
 
 	if (sysfs_attr->prop == POWER_SUPPLY_PROP_BATTERY_PROTECTION_SETTING ||
 		sysfs_attr->prop == POWER_SUPPLY_PROP_BATTERY_PROTECTION_SETTING_EU) {
